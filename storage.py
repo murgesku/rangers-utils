@@ -2,7 +2,7 @@ from struct import unpack
 from enum import IntEnum
 from collections import namedtuple
 
-from .io import Stream, Buffer
+from .iolib import Stream, Buffer
 from .blockpar import BlockPar
 
 

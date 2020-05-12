@@ -1,10 +1,9 @@
 import zlib
-from io import BytesIO, SEEK_CUR, SEEK_END, SEEK_SET
+from io import BytesIO, SEEK_CUR, SEEK_SET, SEEK_END
 from struct import pack, unpack
 from abc import abstractmethod
-from typing import Union, BinaryIO
-
-from .common import uint_to_bytes
+from collections import namedtuple
+from typing import Union, BinaryIO, NamedTuple
 
 
 class AbstractIO:
@@ -16,7 +15,7 @@ class AbstractIO:
         return self
 
     def __exit__(self, *args, **kwargs):
-        self._io.close(*args, **kwargs)
+        self._io.close()
 
     def close(self):
         self._io.close()
@@ -64,8 +63,12 @@ class AbstractIO:
         self._io.write(v.encode('utf-16le'))
         self._io.write(b'\x00\x00')
 
+    def add_struct(self, v: NamedTuple):
+        if v.__class__.__name__ in TypeStruct._structs_cache:
+            TypeStruct._structs_cache[v.__class__.__name__]._add(self, v)
+
     def get(self, size: int) -> bytes:
-        return self._io.read(sz)
+        return self._io.read(size)
 
     def get_bool(self) -> bool:
         return unpack('<B', self._io.read(1))[0] == 1
@@ -104,13 +107,16 @@ class AbstractIO:
         s = self._io.read(size).decode('utf-16le')
         self._io.seek(2, SEEK_CUR)
         return s
-    
+
+    def get_struct(self, t: 'TypeStruct') -> NamedTuple:
+        return t._get(self)
+
     @abstractmethod
-    def _decompress(start: int, size: int, bufsize: int) -> bytes:
-        '''Abstract interface for zlib.decompress'''
+    def _decompress(self, start: int, size: int, bufsize: int) -> bytes:
+        """Abstract interface for zlib.decompress"""
         pass
 
-    def decompress(self, size: int=-1) -> bytes:
+    def decompress(self, size: int = -1) -> bytes:
         if size == -1:
             size = self.size() - self.pos()
 
@@ -119,11 +125,11 @@ class AbstractIO:
         if magic == b'ZL01':
             bufsize = self.get_uint()
             start = self.pos()
-            result = self._decompress(start, size-8, bufsize)
+            result = self._decompress(start, size - 8, bufsize)
         elif magic == b'ZL02':
             # return
             self.close()
-            raise ValueError(f"AbstractIO.decompress: unknown format")
+            raise ValueError("AbstractIO.decompress: unknown format")
         elif magic == b'ZL03':
             for i in range(self.get_int()):
                 chunksize = self.get_uint()
@@ -131,20 +137,20 @@ class AbstractIO:
                 result += self._decompress(start, chunksize, 65000)
         else:
             self.close()
-            raise ValueError(f"AbstractIO.decompress: unknown format")
+            raise ValueError("AbstractIO.decompress: unknown format")
         return result
-    
-    def _compress():
+
+    def _compress(self):
         pass
-    
-    def compress(self, fmt: str, size: int=-1) -> bytes:
+
+    def compress(self, fmt: str, size: int = -1) -> bytes:
         """
         Supported formats: 'ZLO1', 'ZL02', 'ZL03'
         """
         pass
         # if size == -1:
         #     size = self.size() - self.pos()
-        
+
         # result = b''
         # if fmt == 'ZL01':
         #     result += b'ZL01'
@@ -164,24 +170,25 @@ class Stream(AbstractIO):
         if self._io is not None:
             self._io.close()
         self._io = io
-    
-    def _decompress(start: int, size: int, bufsize: int) -> bytes:
+
+    def _decompress(self, start: int, size: int, bufsize: int) -> bytes:
         return zlib.decompress(self.get(size), bufsize=bufsize)
-    
+
     @classmethod
-    def from_file(cls, file: Union[str, bytes, int], mode: str='rb') -> Stream:
+    def from_file(cls, file: Union[str, bytes, int],
+                  mode: str = 'rb') -> 'Stream':
         f = open(file, mode)
         return cls(f)
 
     @classmethod
-    def from_bytes(cls, buf: Union[bytes, bytearray, None]=None) -> Stream:
+    def from_bytes(cls, buf: Union[bytes, bytearray, None] = None) -> 'Stream':
         if buf is None:
             return cls(BytesIO())
         else:
             return cls(BytesIO(buf))
 
     @classmethod
-    def from_io(cls, io: Union[BinaryIO, AbstractIO]) -> Stream:
+    def from_io(cls, io: Union[BinaryIO, AbstractIO]) -> 'Stream':
         if isinstance(io, cls):
             return io
         else:
@@ -195,7 +202,7 @@ class Buffer(AbstractIO):
             self._io.close()
         self._io = BytesIO(io.read())
 
-    def add_buf(self, buf: Buffer, size: int):
+    def add_buf(self, buf: 'Buffer', size: int):
         self._io.write(buf.get(size))
 
     def get_buf(self, size: int):
@@ -214,7 +221,7 @@ class Buffer(AbstractIO):
                 seed += 0x7fffffff
             yield seed - 1
 
-    def cipher(self, key: int, size: int=-1):
+    def cipher(self, key: int, size: int = -1):
         if size == -1:
             size = self.size() - self.pos()
         gen = self._rand31pm(key)
@@ -225,7 +232,7 @@ class Buffer(AbstractIO):
             view[i] = view[i] ^ (next(gen) & 255)
         self._io.seek(size, SEEK_CUR)
 
-    def decipher(self, key: int, size: int=-1):
+    def decipher(self, key: int, size: int = -1):
         if size == -1:
             size = self.size() - self.pos()
         gen = self._rand31pm(key)
@@ -236,14 +243,14 @@ class Buffer(AbstractIO):
             view[i] = view[i] ^ (next(gen) & 255)
         self._io.seek(begin, SEEK_SET)
 
-    def _decompress(start: int, size: int, bufsize: int) -> bytes:
-        end = start+size
+    def _decompress(self, start: int, size: int, bufsize: int) -> bytes:
+        end = start + size
         result = zlib.decompress(self._io.getbuffer()[start:end],
                                  bufsize=bufsize)
         self._io.seek(size, SEEK_CUR)
         return result
 
-    def calc_hash(self, size: int=-1) -> int:
+    def calc_hash(self, size: int = -1) -> int:
         if size == -1:
             size = self.size() - self.pos()
         begin = self.pos()
@@ -251,10 +258,93 @@ class Buffer(AbstractIO):
         return zlib.crc32(self._io.getbuffer()[begin:end])
 
     @classmethod
-    def from_file(cls, file: Union[str, bytes, int], mode: str='rb') -> Buffer:
+    def from_file(cls, file: Union[str, bytes, int],
+                  mode: str = 'rb') -> 'Buffer':
         f = open(file, mode)
         return cls(BytesIO(f.read()))
 
     @classmethod
-    def from_bytes(cls, b: Union[bytes, bytearray]) -> Buffer:
-        return cls(BytesIO(buf))
+    def from_bytes(cls, b: Union[bytes, bytearray]) -> 'Buffer':
+        return cls(BytesIO(b))
+
+
+class TypeStruct:
+    _structs_cache = {}
+    _io_map = {
+        'bool': ('get_bool', 'add_bool'),
+        'byte': ('get_byte', 'add_byte'),
+        'word': ('get_word', 'add_word'),
+        'int': ('get_int', 'add_int'),
+        'uint': ('get_uint', 'add_uint'),
+        'single': ('get_single', 'add_single'),
+        'double': ('get_double', 'add_double'),
+        'widestr': ('get_widestr', 'add_widestr')
+    }
+
+    def __init__(self, name: str, fields: tuple):
+        self.ntuple_cls = namedtuple(name, tuple(f[0] for f in fields))
+        self.types = tuple(f[1].strip() for f in fields)
+        TypeStruct._structs_cache[name] = self
+
+    def _get(self, absio: AbstractIO) -> NamedTuple:
+        result = []
+        for t in self.types:
+            if ':' in t:
+                field_type, num_repeat = t.split(':', 1)
+                num_repeat = int(num_repeat)
+            else:
+                field_type = t
+                num_repeat = 1
+
+            if field_type in TypeStruct._io_map:
+                get_call = getattr(absio, TypeStruct._io_map[field_type][0])
+                if num_repeat > 1:
+                    subresult = []
+                    for i in range(num_repeat):
+                        subresult.append(get_call())
+                    result.append(tuple(subresult))
+                else:
+                    for i in range(num_repeat):
+                        result.append(get_call())
+            elif field_type in TypeStruct._structs_cache:
+                get_call = TypeStruct._structs_cache[field_type]._get
+                if num_repeat > 1:
+                    subresult = []
+                    for i in range(num_repeat):
+                        subresult.append(get_call())
+                    result.append(tuple(subresult))
+                else:
+                    for i in range(num_repeat):
+                        result.append(get_call())
+            else:
+                absio.close()
+                raise TypeError("TypeStruct.get: unknown type")
+
+        return self.ntuple_cls._make(result)
+
+    def _add(self, absio: AbstractIO, value: NamedTuple):
+        for v, t in zip(value, self.types):
+            if ':' in t:
+                field_type, num_repeat = t.split(':', 1)
+                num_repeat = int(num_repeat)
+            else:
+                field_type = t
+                num_repeat = 1
+
+            if field_type in TypeStruct._io_map:
+                add_call = getattr(absio, TypeStruct._io_map[field_type][1])
+                if num_repeat > 1:
+                    for i in range(num_repeat):
+                        add_call(v[i])
+                else:
+                    add_call(v)
+            elif field_type in TypeStruct._structs_cache:
+                add_call = TypeStruct._structs_cache[field_type]._add
+                if num_repeat > 1:
+                    for i in range(num_repeat):
+                        add_call(v[i])
+                else:
+                    add_call(v)
+            else:
+                absio.close()
+                raise TypeError("TypeStruct.add: unknown type")
