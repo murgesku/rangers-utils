@@ -5,7 +5,7 @@ __all__ = [
 from enum import IntEnum
 from collections import namedtuple
 
-from .iolib import Stream, Buffer
+from .io import Stream, Buffer
 from .blockpar import BlockPar
 
 

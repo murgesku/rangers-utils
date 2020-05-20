@@ -5,7 +5,7 @@ __all__ = [
 from enum import IntEnum
 
 from ._blockpar_helper import *
-from .iolib import AbstractIO, Buffer
+from .io import AbstractIO, Buffer
 from .common import bytes_xor, bytes_to_int
 
 
