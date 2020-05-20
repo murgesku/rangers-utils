@@ -1,3 +1,9 @@
+__all__ = [
+    "Stream",
+    "Buffer",
+    "SEEK_END", "SEEK_SET", "SEEK_CUR",
+]
+
 import zlib
 from io import BytesIO, SEEK_CUR, SEEK_SET, SEEK_END
 from struct import pack, unpack

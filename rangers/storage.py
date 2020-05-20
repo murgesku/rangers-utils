@@ -1,4 +1,7 @@
-from struct import unpack
+__all__ = [
+    "Storage",
+]
+
 from enum import IntEnum
 from collections import namedtuple
 
