@@ -3,6 +3,8 @@ __all__ = [
 ]
 
 from enum import IntEnum
+from typing import Union, List, TextIO
+import warnings
 
 from ._blockpar_helper import *
 from .io import AbstractIO, Buffer
@@ -17,12 +19,10 @@ class ElementKind(IntEnum):
 
 class BlockParElement:
 
-    def __init__(self, name="", content=None, comment=""):
-        """
-        :type name: str
-        :type content: str | BlockPar | None
-        :type comment: str
-        """
+    def __init__(self,
+                 name: str = "",
+                 content: Union[str, 'BlockPar', None] = None,
+                 comment: str = ""):
         self.name = name
         if isinstance(content, str):
             self.kind = ElementKind.PARAM
@@ -38,54 +38,34 @@ class BlockParElement:
 
 
 class BlockPar:
-    """
-    Implements multudict-like interface for BlockPar.
-    """
-    def __init__(self, sort=True):
+
+    def __init__(self, sort: bool = True):
         self._order_map = LinkedList()
         self._search_map = RedBlackTree()
         self.sorted = sort
 
-    def __setitem__(self, key, value):
-        """
-        :type key: str
-        :type value: BlockPar|str
-        """
-        self._order_map.remove_all(key)
-        self._search_map.remove_all(key)
-        elem = BlockParElement(key, value)
-        self._order_map.append(elem)
-        self._search_map.append(elem)
+    def __setitem__(self, key: str, value: Union[str, 'BlockPar']):
+        warnings.warn("Mapping interface is deprecated, "
+                      "use object.set instead",
+                      DeprecationWarning)
+        self.set(key, value)
 
-    def __getitem__(self, key):
-        """
-        :type key: str
-        :rtype BlockPar|str
-        """
-        node = self._search_map.find(key)
-        if node is None:
-            raise KeyError
-        return node.content.content
+    def __getitem__(self, key: str) -> Union[str, 'BlockPar']:
+        warnings.warn("Mapping interface is deprecated, "
+                      "use object.get or object.getone instead",
+                      DeprecationWarning)
+        return self.getone(key)
 
-    def __delitem__(self, key):
-        """
-        :type key: str
-        """
+    def __delitem__(self, key: str):
         raise NotImplementedError
 
-    def __contains__(self, key):
-        """
-        :type key: str
-        """
+    def __contains__(self, key: str) -> bool:
         return self._search_map.__contains__(key)
 
     def __len__(self):
         return self._order_map.count
 
-    def __iter__(self):
-        """
-        :rtype BlockPar|str
-        """
+    def __iter__(self) -> Union[str, 'BlockPar']:
         if self.sorted:
             src = self._search_map.__iter__()
         else:
@@ -97,37 +77,28 @@ class BlockPar:
     def clear(self):
         pass
 
-    def add(self, key, value):
-        """
-        :type key: str
-        :type value: BlockPar|str
-        """
+    def add(self, key: str, value: Union[str, 'BlockPar']):
         elem = BlockParElement(key, value)
         self._order_map.append(elem)
         self._search_map.append(elem)
 
-    def get(self, key):
-        """
-        :type key: str
-        :rtype BlockPar|str
-        """
+    def set(self, key: str, value: Union[str, 'BlockPar']):
+        self._order_map.remove_all(key)
+        self._search_map.remove_all(key)
+        elem = BlockParElement(key, value)
+        self._order_map.append(elem)
+        self._search_map.append(elem)
+
+    def get(self, key: str) -> Union[str, 'BlockPar']:
         return self.getone(key)
 
-    def getone(self, key):
-        """
-        :type key: str
-        :rtype: list[BlockPar|str]
-        """
+    def getone(self, key: str) -> Union[str, 'BlockPar']:
         node = self._search_map.find(key)
         if node is None:
             raise KeyError
         return node.content.content
 
-    def getall(self, key):
-        """
-        :type key: str
-        :rtype: list[BlockPar|str]
-        """
+    def getall(self, key: str) -> List[Union[str, 'BlockPar']]:
         node = self._search_map.find(key)
         if node is None:
             raise KeyError
@@ -137,10 +108,7 @@ class BlockPar:
             node = node.next
         return result
 
-    def save(self, s, *, new_format=False):
-        """
-        :type s: AbstractIO
-        """
+    def save(self, s: AbstractIO, *, new_format: bool = False):
         s.add_bool(self.sorted)
         s.add_uint(len(self))
 
@@ -212,10 +180,7 @@ class BlockPar:
                         index = 0
                 level -= 1
 
-    def load(self, s, *, new_format=False):
-        """
-        :type s: AbstractIO
-        """
+    def load(self, s: AbstractIO, *, new_format: bool = False):
         self.clear()
 
         curblock = self
@@ -256,10 +221,7 @@ class BlockPar:
                     left -= 1
                 level -= 1
 
-    def load_txt(self, f):
-        """
-        :type f: io.TextIO
-        """
+    def load_txt(self, f: TextIO):
         self.clear()
 
         curblock = self
@@ -352,10 +314,7 @@ class BlockPar:
             else:
                 continue
 
-    def save_txt(self, f):
-        """
-        :type f: io.TextIO
-        """
+    def save_txt(self, f: TextIO):
         is_sort = self.sorted
         if is_sort:
             curblock = self._search_map.__iter__()
@@ -422,11 +381,7 @@ class BlockPar:
                     curblock, left = stack.pop()
                     left -= 1
 
-    def get_par(self, path):
-        """
-        :type path: str
-        :rtype: str
-        """
+    def get_par(self, path: str) -> str:
         path = path.strip().split('.')
 
         curblock = self
@@ -443,11 +398,7 @@ class BlockPar:
                     raise Exception("BlockPar.get_par: not a parameter")
                 return el.content.content
 
-    def get_block(self, path):
-        """
-        :type path: str
-        :rtype: BlockPar
-        """
+    def get_block(self, path: str) -> 'BlockPar':
         path = path.strip().split('.')
 
         curblock = self
@@ -464,32 +415,19 @@ class BlockPar:
                     raise Exception("BlockPar.get_par: not a block")
                 return el.content.content
 
-    def to_txt(self, path, encoding='cp1251'):
-        """
-        :type path: str
-        :type encoding: str
-        """
+    def to_txt(self, path: str, encoding: str = 'cp1251'):
         with open(path, 'wt', encoding=encoding, newline='') as txt:
             self.save_txt(txt)
 
     @classmethod
-    def from_txt(cls, path, encoding='cp1251'):
-        """
-        :type path: str
-        :type encoding: str
-        :rtype: BlockPar
-        """
+    def from_txt(cls, path: str, encoding: str = 'cp1251') -> 'BlockPar':
         blockpar = cls()
         with open(path, 'rt', encoding=encoding, newline='') as txt:
             blockpar.load_txt(txt)
         return blockpar
 
     @classmethod
-    def from_dat(cls, path):
-        """
-        :type path: str
-        :rtype : BlockPar
-        """
+    def from_dat(cls, path: str) -> 'BlockPar':
         blockpar = None
         seed_key = b'\x89\xc6\xe8\xb1'
 
@@ -508,7 +446,7 @@ class BlockPar:
         if calc_hash == content_hash:
             unpacked = Buffer.from_bytes(b.decompress(size))
             b.close()
-            blockpar = BlockPar()
+            blockpar = cls()
             blockpar.load(unpacked, new_format=True)
             unpacked.close()
         else:
