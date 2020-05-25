@@ -5,8 +5,8 @@ __all__ = [
 from enum import IntEnum
 from collections import namedtuple
 
-from .io import Stream, Buffer
-from .blockpar import BlockPar
+from rangers.io import Stream, Buffer
+from rangers.blockpar import BlockPar
 
 
 _header = namedtuple('DataBufHeader',

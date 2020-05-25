@@ -1,4 +1,5 @@
 __all__ = [
+    "AbstractIO",
     "Stream",
     "Buffer",
     "SEEK_END", "SEEK_SET", "SEEK_CUR",

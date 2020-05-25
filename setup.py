@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="rangers-utils",
-    version="0.8.0",
+    version="0.9.0",
     author="Sergei Osminin",
     author_email="murgesku@gmail.com",
     description="Space Rangers HD game file format tools",

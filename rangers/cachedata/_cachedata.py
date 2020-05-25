@@ -1,14 +1,14 @@
 __all__ = [
-    "BlockPar",
+    "CacheData",
 ]
 
 from enum import IntEnum
 from typing import Union, List, TextIO
 import warnings
 
-from ._blockpar_helper import *
-from .io import AbstractIO, Buffer
-from .common import bytes_xor, bytes_to_int
+from rangers._blockpar_helper import *
+from rangers.io import AbstractIO, Buffer
+from rangers.common import bytes_xor, bytes_to_int
 
 
 class ElementKind(IntEnum):
@@ -17,16 +17,16 @@ class ElementKind(IntEnum):
     BLOCK = 2
 
 
-class BlockParElement:
+class CacheDataElement:
 
     def __init__(self,
                  name: str = "",
-                 content: Union[str, 'BlockPar', None] = None,
+                 content: Union[str, 'CacheData', None] = None,
                  comment: str = ""):
         self.name = name
         if isinstance(content, str):
             self.kind = ElementKind.PARAM
-        elif isinstance(content, BlockPar):
+        elif isinstance(content, CacheData):
             self.kind = ElementKind.BLOCK
         else:
             self.kind = ElementKind.UNDEF
@@ -37,20 +37,19 @@ class BlockParElement:
         return f"<\"{self.name}\">"
 
 
-class BlockPar:
+class CacheData:
 
-    def __init__(self, sort: bool = True):
+    def __init__(self):
         self._order_map = LinkedList()
         self._search_map = RedBlackTree()
-        self.sorted = sort
 
-    def __setitem__(self, key: str, value: Union[str, 'BlockPar']):
+    def __setitem__(self, key: str, value: Union[str, 'CacheData']):
         warnings.warn("Mapping interface is deprecated, "
                       "use object.set instead",
                       DeprecationWarning)
         self.set(key, value)
 
-    def __getitem__(self, key: str) -> Union[str, 'BlockPar']:
+    def __getitem__(self, key: str) -> Union[str, 'CacheData']:
         warnings.warn("Mapping interface is deprecated, "
                       "use object.get or object.getone instead",
                       DeprecationWarning)
@@ -65,11 +64,8 @@ class BlockPar:
     def __len__(self):
         return self._order_map.count
 
-    def __iter__(self) -> Union[str, 'BlockPar']:
-        if self.sorted:
-            src = self._search_map.__iter__()
-        else:
-            src = self._order_map.__iter__()
+    def __iter__(self) -> Union[str, 'CacheData']:
+        src = self._search_map.__iter__()
         for i in range(len(self)):
             node = next(src)
             yield node.content.content
@@ -77,28 +73,28 @@ class BlockPar:
     def clear(self):
         pass
 
-    def add(self, key: str, value: Union[str, 'BlockPar']):
-        elem = BlockParElement(key, value)
+    def add(self, key: str, value: Union[str, 'CacheData']):
+        elem = CacheDataElement(key, value)
         self._order_map.append(elem)
         self._search_map.append(elem)
 
-    def set(self, key: str, value: Union[str, 'BlockPar']):
+    def set(self, key: str, value: Union[str, 'CacheData']):
         self._order_map.remove_all(key)
         self._search_map.remove_all(key)
-        elem = BlockParElement(key, value)
+        elem = CacheDataElement(key, value)
         self._order_map.append(elem)
         self._search_map.append(elem)
 
-    def get(self, key: str) -> Union[str, 'BlockPar']:
+    def get(self, key: str) -> Union[str, 'CacheData']:
         return self.getone(key)
 
-    def getone(self, key: str) -> Union[str, 'BlockPar']:
+    def getone(self, key: str) -> Union[str, 'CacheData']:
         node = self._search_map.find(key)
         if node is None:
             raise KeyError
         return node.content.content
 
-    def getall(self, key: str) -> List[Union[str, 'BlockPar']]:
+    def getall(self, key: str) -> List[Union[str, 'CacheData']]:
         node = self._search_map.find(key)
         if node is None:
             raise KeyError
@@ -109,16 +105,11 @@ class BlockPar:
         return result
 
     def save(self, s: AbstractIO, *, new_format: bool = False):
-        s.add_bool(self.sorted)
         s.add_uint(len(self))
 
-        is_sort = self.sorted
-        if is_sort:
-            curblock = self._search_map.__iter__()
-        else:
-            curblock = self._order_map.__iter__()
+        curblock = self._search_map.__iter__()
+
         left = len(self)
-        count = 1
         index = 0
 
         level = 0
@@ -129,16 +120,6 @@ class BlockPar:
                 node = next(curblock)
                 el = node.content
 
-                if new_format and is_sort:
-                    if node.count > 1:
-                        count = node.count
-                        index = 0
-                    s.add_uint(index)
-                    if index == 0:
-                        s.add_uint(count)
-                    else:
-                        s.add_uint(0)
-
                 if el.kind == ElementKind.PARAM:
                     s.add_byte(int(ElementKind.PARAM))
                     s.add_widestr(el.name)
@@ -146,45 +127,28 @@ class BlockPar:
 
                     left -= 1
 
-                    index += 1
-                    if index >= count:
-                        count = 1
-                        index = 0
-
                 elif el.kind == ElementKind.BLOCK:
                     s.add_byte(int(ElementKind.BLOCK))
                     s.add_widestr(el.name)
 
-                    stack.append((curblock, left, is_sort, count, index))
-                    is_sort = el.content.sorted
-                    if is_sort:
-                        curblock = el.content._search_map.__iter__()
-                    else:
-                        curblock = el.content._order_map.__iter__()
+                    stack.append((curblock, left, index))
+                    curblock = el.content._search_map.__iter__()
                     left = len(el.content)
-                    count = 1
-                    index = 0
 
-                    s.add_bool(is_sort)
                     s.add_uint(left)
 
                     level += 1
 
             else:
                 if level > 0:
-                    curblock, left, is_sort, count, index = stack.pop()
+                    curblock, left, index = stack.pop()
                     left -= 1
-                    index += 1
-                    if index >= count:
-                        count = 1
-                        index = 0
                 level -= 1
 
     def load(self, s: AbstractIO, *, new_format: bool = False):
         self.clear()
 
         curblock = self
-        curblock.sorted = s.get_bool()
 
         left = s.get_uint()
 
@@ -193,9 +157,6 @@ class BlockPar:
 
         while level > -1:
             if left > 0:
-                if new_format and curblock.sorted:
-                    s.get(8)
-
                 type = s.get_byte()
                 name = s.get_widestr()
 
@@ -207,10 +168,9 @@ class BlockPar:
                     stack.append((curblock, left))
 
                     prevblock = curblock
-                    curblock = BlockPar()
+                    curblock = CacheData()
                     prevblock.add(name, curblock)
 
-                    curblock.sorted = s.get_bool()
                     left = s.get_uint()
                     level += 1
                     continue
@@ -250,13 +210,6 @@ class BlockPar:
                 head = line.split('{', 1)[0]
                 head = head.rstrip('\x09\x20')  # \t\s
 
-                if head.endswith(('^', '~')):
-                    curblock.sorted = head.endswith('^')
-                    head = head[:-1]
-                    head = head.rstrip('\x09\x20')  # \t\s
-                else:
-                    curblock.sorted = True
-
                 path = ''
                 if '=' in head:
                     name, path = line.split('=', 1)
@@ -266,10 +219,10 @@ class BlockPar:
                     name = head
 
                 if path != '':
-                    curblock[name] = BlockPar.from_txt(path)
+                    curblock[name] = CacheData.from_txt(path)
                 else:
                     prevblock = curblock
-                    curblock = BlockPar()
+                    curblock = CacheData()
                     prevblock.add(name, curblock)
 
                     level += 1
@@ -284,42 +237,13 @@ class BlockPar:
                 name = name.rstrip('\x09\x20')  # \t\s
                 value = value.lstrip('\x09\x20')  # \t\s
 
-                # multiline parameters - heredoc
-                if value.startswith('<<<'):
-                    value = ''
-                    spacenum = 0
-                    while True:
-                        line = f.readline()
-                        line_no += 1
-                        if line == '':  # EOF
-                            raise Exception("BlockPar.load_txt: "
-                                            "heredoc end marker not found")
-
-                        if line.strip('\x09\x0a\x0d\x20') == '':
-                            continue
-
-                        if value == '':
-                            spacenum = len(line) - len(line.lstrip('\x20'))
-                            if spacenum > (4 * level):
-                                spacenum = 4 * level
-
-                        if line.lstrip('\x09\x20').startswith('>>>'):
-                            value = value.rstrip('\x0a\x0d')
-                            break
-
-                        value += line[spacenum:]
-
                 curblock.add(name, value)
 
             else:
                 continue
 
     def save_txt(self, f: TextIO):
-        is_sort = self.sorted
-        if is_sort:
-            curblock = self._search_map.__iter__()
-        else:
-            curblock = self._order_map.__iter__()
+        curblock = self._search_map.__iter__()
         left = len(self)
 
         level = 0
@@ -334,37 +258,18 @@ class BlockPar:
                 if el.kind == ElementKind.PARAM:
                     f.write(el.name)
                     f.write('=')
-                    if '\x0d' in el.content or '\x0a' in el.content:
-                        f.write('<<<')
-                        f.write('\x0d\x0a')
-                        content = el.content
-                        for s in content.splitlines(keepends=True):
-                            f.write(4 * '\x20' * level)
-                            f.write(s)
-                        f.write('\x0d\x0a')
-                        f.write(4 * '\x20' * level)
-                        f.write('>>>')
-                    else:
-                        f.write(el.content)
+                    f.write(el.content)
                     f.write('\x0d\x0a')
                     left -= 1
 
                 elif el.kind == ElementKind.BLOCK:
                     stack.append((curblock, left))
 
-                    is_sort = el.content.sorted
-                    if is_sort:
-                        curblock = el.content._search_map.__iter__()
-                    else:
-                        curblock = el.content._order_map.__iter__()
+                    curblock = el.content._search_map.__iter__()
                     left = len(el.content)
 
                     f.write(el.name)
                     f.write('\x20')  # space
-                    if el.content.sorted:
-                        f.write('^')
-                    else:
-                        f.write('~')
                     f.write('{')
                     f.write('\x0d\x0a')  # \r\n
                     level += 1
@@ -388,31 +293,31 @@ class BlockPar:
         for part in path:
             el = curblock._search_map.find(part)
             if el is None:
-                raise Exception("BlockPar.get_par: path not exists")
+                raise Exception("CacheData.get_par: path not exists")
             if part != path[-1]:
                 if el.content.kind is not ElementKind.BLOCK:
-                    raise Exception("BlockPar.get_par: path not exists")
+                    raise Exception("CacheData.get_par: path not exists")
                 curblock = el.content.content
             else:
                 if el.content.kind is not ElementKind.PARAM:
-                    raise Exception("BlockPar.get_par: not a parameter")
+                    raise Exception("CacheData.get_par: not a parameter")
                 return el.content.content
 
-    def get_block(self, path: str) -> 'BlockPar':
+    def get_block(self, path: str) -> 'CacheData':
         path = path.strip().split('.')
 
         curblock = self
         for part in path:
             el = curblock._search_map.find(part)
             if el is None:
-                raise Exception("BlockPar.get_par: path not exists")
+                raise Exception("CacheData.get_par: path not exists")
             if part != path[-1]:
                 if el.content.kind is not ElementKind.BLOCK:
-                    raise Exception("BlockPar.get_par: path not exists")
+                    raise Exception("CacheData.get_par: path not exists")
                 curblock = el.content.content
             else:
                 if el.content.kind is not ElementKind.BLOCK:
-                    raise Exception("BlockPar.get_par: not a block")
+                    raise Exception("CacheData.get_par: not a block")
                 return el.content.content
 
     def to_txt(self, path: str, encoding: str = 'cp1251'):
@@ -420,16 +325,16 @@ class BlockPar:
             self.save_txt(txt)
 
     @classmethod
-    def from_txt(cls, path: str, encoding: str = 'cp1251') -> 'BlockPar':
-        blockpar = cls()
+    def from_txt(cls, path: str, encoding: str = 'cp1251') -> 'CacheData':
+        cachedata = cls()
         with open(path, 'rt', encoding=encoding, newline='') as txt:
-            blockpar.load_txt(txt)
-        return blockpar
+            cachedata.load_txt(txt)
+        return cachedata
 
     @classmethod
-    def from_dat(cls, path: str) -> 'BlockPar':
-        blockpar = None
-        seed_key = b'\x89\xc6\xe8\xb1'
+    def from_dat(cls, path: str) -> 'CacheData':
+        cachedata = None
+        seed_key = b'\x37\x3f\x8f\xea'
 
         b = Buffer.from_file(path)
 
@@ -446,12 +351,12 @@ class BlockPar:
         if calc_hash == content_hash:
             unpacked = Buffer.from_bytes(b.decompress(size))
             b.close()
-            blockpar = cls()
-            blockpar.load(unpacked, new_format=True)
+            cachedata = cls()
+            cachedata.load(unpacked)
             unpacked.close()
         else:
             b.close()
-            raise Exception("BlockPar.from_dat: wrong content hash")
+            raise Exception("CacheData.from_dat: wrong content hash")
 
-        return blockpar
+        return cachedata
 
