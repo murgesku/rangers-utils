@@ -48,7 +48,7 @@ class RedBlackTree:
 
     def __init__(self):
         self._root = None
-        self._count = 0
+        self.count = 0
 
     def rotate_left(self, node):
         pivot = node.right
@@ -81,7 +81,7 @@ class RedBlackTree:
         node.parent = pivot
 
     def append(self, content):
-        self._count += 1
+        self.count += 1
         z = RedBlackTree.Node(content)
         if self._root is None:
             z.color = BLACK
@@ -165,7 +165,7 @@ class RedBlackTree:
                             self._root = cur
                         x = cur
                     x.count -= 1
-                    self._count -= 1
+                    self.count -= 1
                     return
             elif name < x.content.name:
                 x = x.left
@@ -180,7 +180,7 @@ class RedBlackTree:
         self.remove(name, -1)
 
     def _remove(self, node):
-        self._count -= node.count
+        self.count -= node.count
         if (node.left is None) or (node.right is None):
             x = node
         else:
@@ -276,7 +276,7 @@ class RedBlackTree:
         return x
 
     def __len__(self):
-        return self._count
+        return self.count
 
     def __iter__(self):
         return self.inorder_traverse()

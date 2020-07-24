@@ -3,7 +3,7 @@ __all__ = [
 ]
 
 from enum import IntEnum
-from typing import Union, List, TextIO
+from typing import Union, TextIO
 import warnings
 
 from rangers._blockpar_helper import *
@@ -40,7 +40,6 @@ class CacheDataElement:
 class CacheData:
 
     def __init__(self):
-        self._order_map = LinkedList()
         self._search_map = RedBlackTree()
 
     def __setitem__(self, key: str, value: Union[str, 'CacheData']):
@@ -62,7 +61,7 @@ class CacheData:
         return self._search_map.__contains__(key)
 
     def __len__(self):
-        return self._order_map.count
+        return self._search_map.count
 
     def __iter__(self) -> Union[str, 'CacheData']:
         src = self._search_map.__iter__()
@@ -75,14 +74,11 @@ class CacheData:
 
     def add(self, key: str, value: Union[str, 'CacheData']):
         elem = CacheDataElement(key, value)
-        self._order_map.append(elem)
         self._search_map.append(elem)
 
     def set(self, key: str, value: Union[str, 'CacheData']):
-        self._order_map.remove_all(key)
         self._search_map.remove_all(key)
         elem = CacheDataElement(key, value)
-        self._order_map.append(elem)
         self._search_map.append(elem)
 
     def get(self, key: str) -> Union[str, 'CacheData']:
@@ -94,17 +90,7 @@ class CacheData:
             raise KeyError
         return node.content.content
 
-    def getall(self, key: str) -> List[Union[str, 'CacheData']]:
-        node = self._search_map.find(key)
-        if node is None:
-            raise KeyError
-        result = [None for i in range(node.count)]
-        for i in range(node.count):
-            result[i] = node.content.content
-            node = node.next
-        return result
-
-    def save(self, s: AbstractIO, *, new_format: bool = False):
+    def save(self, s: AbstractIO):
         s.add_uint(len(self))
 
         curblock = self._search_map.__iter__()
@@ -145,7 +131,7 @@ class CacheData:
                     left -= 1
                 level -= 1
 
-    def load(self, s: AbstractIO, *, new_format: bool = False):
+    def load(self, s: AbstractIO):
         self.clear()
 
         curblock = self
