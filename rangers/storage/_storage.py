@@ -4,8 +4,9 @@ __all__ = [
 
 from enum import IntEnum
 from collections import namedtuple
+from typing import List
 
-from rangers.io import Stream, Buffer
+from rangers.io import AbstractIO, Stream, Buffer
 from rangers.blockpar import BlockPar
 
 
@@ -20,11 +21,6 @@ _table_entry = namedtuple('DataBufAllocTableEntry',
                            'allocated_number'))
 
 
-DataTableEntry = namedtuple('DataTableEntry',
-                            ('count',
-                             'array'))
-
-
 class StorageKind(IntEnum):
     INT32 = 0
     DWORD = 1
@@ -35,6 +31,12 @@ class StorageKind(IntEnum):
 
 def get_kind(e):
     return StorageKind(e & ((1 << 31)-1)), (e & (1 << 31)) > 0
+
+def set_kind(e, compressed: bool):
+    if compressed:
+        return (e & ((1 << 31)-1)) | (1 << 31)
+    else:
+        return e & ((1 << 31) - 1)
 
 def get_size_by_kind(kind):
     if kind is StorageKind.DOUBLE:
@@ -49,76 +51,86 @@ def get_size_by_kind(kind):
 
 class DataTable:
 
-    def __init__(self, kind=StorageKind(0)):
-        self.header = _header(4*3,  # header size: uint, uint, int; 32 bit
-                              0,
-                              get_size_by_kind(kind))
-        self.entries = []
+    def __init__(self, el_size: int = 1):
+        self._el_size = el_size
+        self.entries: List[bytes] = []
 
-    def load(self, s, sz):
-        """
-        :type s: AbstractIO
-        :type sz: int
-        """
+    def load(self, s: AbstractIO, size: int):
         initpos = s.pos()
-        self.header = _header(
+        header = _header(
             s.get_uint(),
-            s.get_uint(),
+            s.get_int(),
             s.get_int()
         )
-        for i in range(self.header.arrays_number):
-            offset = initpos + self.header.alloc_table_offset + i*4*3  # header size: uint, uint, uint; 32 bit
+        for i in range(header.arrays_number):
+            header_size = 4*3  # uint, uint, int
+            offset = initpos + header.alloc_table_offset + i*header_size
             s.seek(offset)
             entry = _table_entry(
                 s.get_uint(),
-                s.get_uint(),
-                s.get_uint(),
+                s.get_int(),
+                s.get_int(),
             )
             start = initpos + entry.offset
-            length = self.header.element_type_size*entry.number
+            length = header.element_type_size*entry.number
             s.seek(start)
-            self.entries.append(DataTableEntry(entry.number, s.get(length)))
-        endpos = initpos + sz
+            self.entries.append(s.get(length))
+        endpos = initpos + size
         s.seek(endpos)
 
-    def get_widestr(self, i):
-        """
-        :type i: int
-        :rtype: str
-        """
-        return self.entries[i].array.decode('utf-16le')
+    def save(self, s: AbstractIO):
+        initpos = s.pos()
+        s.add_uint(0)
+        s.add_int(len(self.entries))
+        s.add_int(self._el_size)
+        datapos = s.pos()
+        for entry in self.entries:
+            s.add(entry)
+        tablepos = s.pos()
+        s.seek(initpos)
+        s.add_uint(tablepos)
+        s.seek(tablepos)
+        for i in range(len(self.entries)):
+            offset = 0 if i == 0 else len(self.entries[i-1])
+            s.add_uint(datapos + offset)
+            number = len(self.entries[i]) // self._el_size
+            s.add_int(number)
+            s.add_int(number)
+
+    def get_buf(self, i: int) -> Buffer:
+        return Buffer.from_bytes(self.entries[i])
+
+    def get_widestr(self, i: int) -> str:
+        return self.entries[i].decode('utf-16le')
 
 
 class StorageItem:
 
-    def __init__(self, name='', kind=0, datatable=None):
-        self.name = name
-        self.kind, self.compressed = get_kind(kind)
-        self.datatable = datatable
+    def __init__(self, name='', kind=StorageKind.BYTE, datatable=None):
+        self.name: str = name
+        self.kind, compressed = get_kind(kind)
+        self.datatable: DataTable = datatable
 
-    def get(self):
-        """
-        :rtype: DataTable
-        """
+    def get(self) -> DataTable:
         return self.datatable
 
-    def load(self, s):
-        """
-        :type s: AbstractIO
-        """
+    def load(self, s: AbstractIO):
         self.name = s.get_widestr()
-        self.kind, self.compressed = get_kind(s.get_uint())
+        self.kind, compressed = get_kind(s.get_uint())
         size = s.get_uint()
 
-        if self.compressed:
-            self.datatable = DataTable()
+        if compressed:
+            self.datatable = DataTable(get_size_by_kind(self.kind))
             tempbuf = Buffer.from_bytes(s.decompress(size))
             self.datatable.load(tempbuf, tempbuf.size())
             tempbuf.close()
             del tempbuf
         else:
-            self.datatable = DataTable()
+            self.datatable = DataTable(get_size_by_kind(self.kind))
             self.datatable.load(s, size)
+
+    def save(self, s: AbstractIO, compressed: bool = True):
+        pass
 
 
 class StorageRecord:
@@ -127,26 +139,16 @@ class StorageRecord:
         self.name = name
         self.items = items if items is not None else []
 
-    def add(self, item):
-        """
-        :type item: StorageItem
-        """
+    def add(self, item: StorageItem):
         self.items.append(item)
 
-    def get(self, column):
-        """
-        :type column: str
-        :rtype: DataTable
-        """
+    def get(self, column: str) -> DataTable:
         if self.items is not None:
             for item in self.items:
                 if item.name == column:
                     return item.get()
 
-    def load(self, s):
-        """
-        :type s: AbstractIO
-        """
+    def load(self, s: AbstractIO):
         self.name = s.get_widestr()
         for i in range(s.get_uint()):
             item = StorageItem()
@@ -159,27 +161,16 @@ class Storage:
     def __init__(self, records=None):
         self.records = records if records is not None else []
 
-    def add(self, record):
-        """
-        :type record: StorageRecord
-        """
+    def add(self, record: StorageRecord):
         self.records.append(record)
 
-    def get(self, table, column):
-        """
-        :type table: str
-        :type column: str
-        :rtype: DataTable
-        """
+    def get(self, table: str, column: str) -> DataTable:
         if self.records is not None:
             for record in self.records:
                 if record.name == table:
                     return record.get(column)
 
-    def load(self, s):
-        """
-        :type s: AbstractIO
-        """
+    def load(self, s: AbstractIO):
         magic = s.get(4)
         if magic != b'STRG':
             s.close()
@@ -200,11 +191,7 @@ class Storage:
             record.load(s)
             self.records.append(record)
 
-    def restore_blockpar(self, root):
-        """
-        :type root: str
-        :rtype: BlockPar
-        """
+    def restore_blockpar(self, root: str) -> BlockPar:
         bp = BlockPar()
 
         keys = self.get(root, '0')
@@ -219,3 +206,10 @@ class Storage:
                    self.restore_blockpar(values.get_widestr(i)))
 
         return bp
+
+    @classmethod
+    def from_file(cls, path: str) -> 'Storage':
+        storage = cls()
+        with Stream.from_file(path, 'rb') as s:
+            storage.load(s)
+        return storage
