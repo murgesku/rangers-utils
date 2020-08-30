@@ -337,6 +337,7 @@ class LinkedList:
 
         def __init__(self, content):
             self.content = content
+            self.next = None
 
     def __init__(self):
         self.head = None
