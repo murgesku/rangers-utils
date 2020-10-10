@@ -5,13 +5,14 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="rangers-utils",
-    version="0.10.1",
+    version="0.12.0",
     author="Sergei Osminin",
     author_email="murgesku@gmail.com",
     description="Space Rangers HD game file format tools",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/murgesku/rangers-utils",
+    license="MIT License",
     packages=setuptools.find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",
