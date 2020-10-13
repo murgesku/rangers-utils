@@ -22,7 +22,7 @@ class BlockParNode:
 
     def __init__(self,
                  parent: Optional['BlockPar'] = None,
-                 content: Optional[str, 'BlockPar'] = None,
+                 content: Optional[Union[str, 'BlockPar']] = None,
                  comment: str = ""):
         self.parent = parent
         if isinstance(content, str):
@@ -87,7 +87,7 @@ class BlockPar:
         else:
             source = self._map.items()
         for name, content in source:
-            return name, content.content
+            yield name, content.content
 
     def clear(self):
         self._map.clear()
@@ -119,8 +119,8 @@ class BlockPar:
             first.count += 1
         return node
 
-    def add_block(self, name: str) -> 'BlockPar':
-        bp = BlockPar()
+    def add_block(self, name: str, sort: bool = True) -> 'BlockPar':
+        bp = BlockPar(sort=sort)
         self._map.add(name, BlockParNode(self, bp))
         if self.sorted:
             first = self._map.getone(name)
@@ -211,7 +211,7 @@ class BlockPar:
 
     def save(self, s: AbstractIO):
         s.add_bool(self.sorted)
-        s.add_uint(len(self._map))
+        s.add_int(len(self._map))
 
         is_sort = self.sorted
         if is_sort:
@@ -247,10 +247,11 @@ class BlockPar:
                 s.get_int()
                 s.get_int()
             kind = s.get_byte()
-            name = s.get_widestr()
             if kind == ElementKind.PARAM:
+                name = s.get_widestr()
                 self.add_par(name, s.get_widestr())
             elif kind == ElementKind.BLOCK:
+                name = s.get_widestr()
                 bp = self.add_block(name)
                 bp.load(s)
 
@@ -284,11 +285,11 @@ class BlockPar:
                 head = head.rstrip('\x09\x20')  # \t\s
 
                 if head.endswith(('^', '~')):
-                    curblock.sorted = head.endswith('^')
+                    is_sort = head.endswith('^')
                     head = head[:-1]
                     head = head.rstrip('\x09\x20')  # \t\s
                 else:
-                    curblock.sorted = True
+                    is_sort = True
 
                 path = ''
                 if '=' in head:
@@ -302,7 +303,7 @@ class BlockPar:
                     curblock.set(name, BlockPar.from_txt(path))
                 else:
                     prevblock = curblock
-                    curblock = BlockPar()
+                    curblock = BlockPar(is_sort)
                     prevblock.add(name, curblock)
 
                     level += 1
