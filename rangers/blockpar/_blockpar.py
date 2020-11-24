@@ -83,7 +83,7 @@ class BlockPar:
 
     def __iter__(self) -> Tuple[str, Union[str, 'BlockPar', None]]:
         if self.sorted:
-            source = sorted(self._map.items())
+            source = sorted(self._map.items(), key=lambda k: k[0])
         else:
             source = self._map.items()
         for name, content in source:
@@ -351,7 +351,7 @@ class BlockPar:
     def save_txt(self, f: TextIO):
         is_sort = self.sorted
         if is_sort:
-            curblock = iter(sorted(self._map.items()))
+            curblock = iter(sorted(self._map.items(), key=lambda k: k[0]))
         else:
             curblock = iter(self._map.items())
         left = len(self._map)
@@ -387,7 +387,7 @@ class BlockPar:
 
                     is_sort = node.content.sorted
                     if is_sort:
-                        curblock = iter(sorted(node.content._map.items()))
+                        curblock = iter(sorted(node.content._map.items(), key=lambda k: k[0]))
                     else:
                         curblock = iter(node.content._map.items())
                     left = len(node.content._map)
