@@ -2,434 +2,457 @@ __all__ = [
     "BlockPar",
 ]
 
-from enum import IntEnum
-from typing import Union, List, TextIO
-import warnings
+import os.path
+from bisect import bisect_left, bisect_right, insort_right
+from collections import Counter
+from enum import IntEnum, Enum
+from functools import total_ordering
+from typing import Generator, TextIO, TypeAlias, Union, cast, overload
 
-from rangers.blockpar.helper import *
 from rangers.io import AbstractIO, Buffer
-from rangers.utils import bytes_xor, bytes_to_int
+from rangers.utils import bytes_to_int, bytes_xor, num_leading, parse_index
+
+Content: TypeAlias = Union[str, "BlockPar"]
 
 
-class ElementKind(IntEnum):
-    UNDEF = 0
-    PARAM = 1
-    BLOCK = 2
+@total_ordering
+class _Node:
+    class Kind(IntEnum):
+        UNDEF = 0
+        PARAM = 1
+        BLOCK = 2
 
+    __slots__ = ("kind", "name", "content", "comment")
 
-class BlockParElement:
+    kind: Kind
+    name: str
+    content: Content | None
+    comment: str
 
-    def __init__(self,
-                 name: str = "",
-                 content: Union[str, 'BlockPar', None] = None,
-                 comment: str = ""):
+    def __init__(
+        self, name: str = "", content: Content | None = None, comment: str = ""
+    ):
         self.name = name
         if isinstance(content, str):
-            self.kind = ElementKind.PARAM
+            self.kind = _Node.Kind.PARAM
         elif isinstance(content, BlockPar):
-            self.kind = ElementKind.BLOCK
+            self.kind = _Node.Kind.BLOCK
         else:
-            self.kind = ElementKind.UNDEF
+            self.kind = _Node.Kind.UNDEF
         self.content = content
         self.comment = comment
 
     def __repr__(self):
-        return f"<\"{self.name}\">"
+        return f'<{self.kind.name}: "{self.name}">'
+
+    def __lt__(self, other: object) -> bool:
+        if isinstance(other, _Node):
+            return self.name < other.name
+        elif isinstance(other, str):
+            return self.name < other
+        return NotImplemented
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _Node):
+            return self.name == other.name
+        elif isinstance(other, str):
+            return self.name == other
+        return NotImplemented
+
+
+# constant guard to terminate iteration
+_TERMINAL = _Node(comment="!!!TERMINAL!!!")
+
+# sentinel type for default values
+_SENTINEL = Enum("_SENTINEL", "sentinel")
+sentinel = _SENTINEL.sentinel
 
 
 class BlockPar:
+    __content: list[_Node]
+    __keys: Counter[str]
 
-    def __init__(self, sort: bool = True):
-        self._order_map = LinkedList()
-        self._search_map = RedBlackTree()
+    def __init__(self, sort: bool = True) -> None:
+        self.__content = list()
+        self.__keys = Counter()
         self.sorted = sort
 
-    def __setitem__(self, key: str, value: Union[str, 'BlockPar']):
-        warnings.warn("Mapping interface is deprecated, "
-                      "use object.set instead",
-                      DeprecationWarning)
-        self.set(key, value)
-
-    def __getitem__(self, key: str) -> Union[str, 'BlockPar']:
-        warnings.warn("Mapping interface is deprecated, "
-                      "use object.get or object.getone instead",
-                      DeprecationWarning)
-        return self.getone(key)
-
-    def __delitem__(self, key: str):
-        raise NotImplementedError
+    def __delitem__(self, key: str) -> None:
+        if key in self.__keys:
+            if self.sorted:
+                begin = bisect_left(self.__content, key)
+                end = bisect_right(self.__content, key)
+                del self.__content[begin:end]
+            else:
+                self.__content = [node for node in self.__content if node.name != key]
+        del self.__keys[key]
 
     def __contains__(self, key: str) -> bool:
-        return self._search_map.__contains__(key)
+        return key in self.__keys
 
-    def __len__(self):
-        return self._order_map.count
+    def __len__(self) -> int:
+        return len(self.__content)
 
-    def __iter__(self) -> Union[str, 'BlockPar']:
+    def __iter__(self) -> Generator[tuple[str, Content], None, None]:
+        src = iter(self.__content)
+        while (node := next(src, _TERMINAL)) is not _TERMINAL:
+            if node.content is None:
+                continue
+            yield (node.name, node.content)
+
+    def clear(self) -> None:
+        self.__content.clear()
+        self.__keys.clear()
+
+    def add(self, key: str, value: Content) -> None:
+        node = _Node(key, value)
         if self.sorted:
-            src = self._search_map.__iter__()
+            insort_right(self.__content, node)
         else:
-            src = self._order_map.__iter__()
-        for i in range(len(self)):
-            node = next(src)
-            yield node.content.content
+            self.__content.append(node)
+        self.__keys[key] += 1
 
-    def clear(self):
-        pass
+    def set(self, key: str, value: Content) -> None:
+        del self[key]
+        self.add(key, value)
 
-    def add(self, key: str, value: Union[str, 'BlockPar']):
-        elem = BlockParElement(key, value)
-        self._order_map.append(elem)
-        self._search_map.append(elem)
+    @overload
+    def get(self, key: str) -> Content | None: ...
+    @overload
+    def get(self, key: str, index: int) -> Content | None: ...
+    @overload
+    def get(self, key: str, *, default: Content | None) -> Content | None: ...
+    @overload
+    def get(
+        self, key: str, index: int | None, *, default: Content | None
+    ) -> Content | None: ...
+    def get(
+        self, key: str, index: int | None = None, *, default: Content | None = None
+    ) -> Content | None:
+        return self.getone(key, index, default=default)
 
-    def set(self, key: str, value: Union[str, 'BlockPar']):
-        self._order_map.remove_all(key)
-        self._search_map.remove_all(key)
-        elem = BlockParElement(key, value)
-        self._order_map.append(elem)
-        self._search_map.append(elem)
+    @overload
+    def getone(self, key: str) -> Content: ...
+    @overload
+    def getone(self, key: str, index: int) -> Content: ...
+    @overload
+    def getone(self, key: str, *, default: Content | None) -> Content | None: ...
+    @overload
+    def getone(
+        self, key: str, index: int | None, *, default: Content | None
+    ) -> Content | None: ...
+    def getone(
+        self,
+        key: str,
+        index: int | None = None,
+        *,
+        default: Content | None | _SENTINEL = sentinel,
+    ) -> Content | None:
+        if key not in self.__keys:
+            if default is sentinel:
+                raise KeyError(key)
+            return cast(Content | None, default)
 
-    def get(self, key: str) -> Union[str, 'BlockPar']:
-        return self.getone(key)
+        idx = 0 if index is None else index
+        if idx >= self.__keys[key]:
+            if default is sentinel:
+                raise IndexError(f"Index {idx} out of range for key '{key}'")
+            return cast(Content | None, default)
 
-    def getone(self, key: str) -> Union[str, 'BlockPar']:
-        node = self._search_map.find(key)
-        if node is None:
-            raise KeyError
-        return node.content.content
+        return self._getone(key, idx).content
 
-    def getall(self, key: str) -> List[Union[str, 'BlockPar']]:
-        node = self._search_map.find(key)
-        if node is None:
-            raise KeyError
-        result = [None for i in range(node.count)]
-        for i in range(node.count):
-            result[i] = node.content.content
-            node = node.next
-        return result
+    @overload
+    def getall(self, key: str) -> list[Content]: ...
+    @overload
+    def getall(
+        self, key: str, *, default: list[Content] | None
+    ) -> list[Content] | None: ...
+    def getall(
+        self, key: str, *, default: list[Content] | None | _SENTINEL = sentinel
+    ) -> list[Content] | None:
+        if key not in self.__keys:
+            if default is sentinel:
+                raise KeyError(key)
+            return cast(list[Content] | None, default)
+
+        return [node.content for node in self._getall(key) if node.content is not None]
+
+    def _getone(self, key: str, index: int = 0) -> _Node:
+        if self.sorted:
+            first = bisect_left(self.__content, key)
+            return self.__content[first + index]
+        else:
+            for node in self.__content:
+                if node.name == key:
+                    index -= 1
+                    if index < 0:
+                        return node
+            assert False, "unreachable"
+
+    def _getall(self, key: str) -> list[_Node]:
+        if self.sorted:
+            begin = bisect_left(self.__content, key)
+            end = bisect_right(self.__content, key)
+            return self.__content[begin:end]
+        else:
+            return [node for node in self.__content if node.name == key]
 
     def save(self, s: AbstractIO, *, new_format: bool = False):
         s.add_bool(self.sorted)
         s.add_uint(len(self))
 
-        is_sort = self.sorted
-        if is_sort:
-            curblock = self._search_map.__iter__()
-        else:
-            curblock = self._order_map.__iter__()
-        left = len(self)
-        count = 1
+        prev_name = None
         index = 0
 
-        level = 0
-        stack = list()
-
-        while level > -1:
-            if left > 0:
-                node = next(curblock)
-                el = node.content
-
-                if new_format and is_sort:
-                    if node.count > 1:
-                        count = node.count
-                        index = 0
-                    s.add_uint(index)
-                    if index == 0:
-                        s.add_uint(count)
-                    else:
-                        s.add_uint(0)
-
-                if el.kind == ElementKind.PARAM:
-                    s.add_byte(int(ElementKind.PARAM))
-                    s.add_widestr(el.name)
-                    s.add_widestr(el.content)
-
-                    left -= 1
-
-                    index += 1
-                    if index >= count:
-                        count = 1
-                        index = 0
-
-                elif el.kind == ElementKind.BLOCK:
-                    s.add_byte(int(ElementKind.BLOCK))
-                    s.add_widestr(el.name)
-
-                    stack.append((curblock, left, is_sort, count, index))
-                    is_sort = el.content.sorted
-                    if is_sort:
-                        curblock = el.content._search_map.__iter__()
-                    else:
-                        curblock = el.content._order_map.__iter__()
-                    left = len(el.content)
-                    count = 1
+        for node in self.__content:
+            if new_format and self.sorted:
+                if node.name != prev_name:
+                    prev_name = node.name
                     index = 0
+                    count = self.__keys[node.name]
+                else:
+                    count = 0
 
-                    s.add_bool(is_sort)
-                    s.add_uint(left)
+                s.add_uint(index)
+                s.add_uint(count)
+                index += 1
 
-                    level += 1
+            if node.kind != _Node.Kind.UNDEF:
+                s.add_byte(node.kind)
+                s.add_widestr(node.name)
 
-            else:
-                if level > 0:
-                    curblock, left, is_sort, count, index = stack.pop()
-                    left -= 1
-                    index += 1
-                    if index >= count:
-                        count = 1
-                        index = 0
-                level -= 1
+            match node.kind:
+                case _Node.Kind.PARAM:
+                    s.add_widestr(cast(str, node.content))
+
+                case _Node.Kind.BLOCK:
+                    cast(BlockPar, node.content).save(s, new_format=new_format)
+
+                case _:
+                    continue
 
     def load(self, s: AbstractIO, *, new_format: bool = False):
         self.clear()
 
-        curblock = self
-        curblock.sorted = s.get_bool()
+        self.sorted = s.get_bool()
+        remain = s.get_uint()
 
-        left = s.get_uint()
+        while remain > 0:
+            count = 0
+            if new_format and self.sorted:
+                s.get_uint()  # index
+                count = s.get_uint()
 
-        level = 0
-        stack = list()
+            kind = _Node.Kind(s.get_byte())
+            name = s.get_widestr()
 
-        while level > -1:
-            if left > 0:
-                if new_format and curblock.sorted:
-                    s.get(8)
+            if count > 0:
+                self.__keys[name] = count
 
-                type = s.get_byte()
-                name = s.get_widestr()
+            match kind:
+                case _Node.Kind.PARAM:
+                    content = s.get_widestr()
+                    self.add(name, content)
 
-                if type == ElementKind.PARAM:
-                    curblock.add(name, s.get_widestr())
-                    left -= 1
+                case _Node.Kind.BLOCK:
+                    content = BlockPar()
+                    content.load(s, new_format=new_format)
+                    self.add(name, content)
 
-                elif type == ElementKind.BLOCK:
-                    stack.append((curblock, left))
+                case _:
+                    pass
 
-                    prevblock = curblock
-                    curblock = BlockPar()
-                    prevblock.add(name, curblock)
+            remain -= 1
 
-                    curblock.sorted = s.get_bool()
-                    left = s.get_uint()
-                    level += 1
+    def save_txt(self, f: TextIO, *, level: int = 0):
+        for node in self.__content:
+            f.write(4 * "\x20" * level)
+
+            match node.kind:
+                case _Node.Kind.PARAM:
+                    content = cast(str, node.content)
+
+                    f.write(node.name)
+                    f.write("=")
+
+                    if "\x0d" in content or "\x0a" in content:
+                        f.write("<<<")
+                        f.write("\x0d\x0a")
+
+                        for s in content.splitlines(keepends=True):
+                            f.write(4 * "\x20" * level)
+                            f.write(s)
+                        f.write("\x0d\x0a")
+
+                        f.write(4 * "\x20" * level)
+                        f.write(">>>")
+
+                    else:
+                        f.write(content)
+
+                    f.write("\x0d\x0a")
+
+                case _Node.Kind.BLOCK:
+                    content = cast(BlockPar, node.content)
+                    f.write(node.name)
+                    f.write(" ")
+                    f.write("^" if content.sorted else "~")
+                    f.write("{")
+                    f.write("\x0d\x0a")  # \r\n
+
+                    content.save_txt(f, level=level + 1)
+
+                    f.write("}")
+                    f.write("\x0d\x0a")
+
+                case _:
                     continue
 
-            else:
-                if level > 0:
-                    curblock, left = stack.pop()
-                    left -= 1
-                level -= 1
-
-    def load_txt(self, f: TextIO):
+    def load_txt(self, f: TextIO, *, level: int = 0):
         self.clear()
+        self.sorted = level == 0
 
-        curblock = self
+        while line := f.readline():
+            line = line.strip("\x09\x0a\x0d\x20")  # \t\n\r\s
 
-        level = 0
-        stack = list()
+            if "//" in line:
+                line, _ = line.split("//", 1)
+                line = line.rstrip("\x09\x20")  # \t\s
 
-        line_no = 0
-
-        while True:
-            line = f.readline()
-            line_no += 1
-            if line == '':  # EOF
-                break
-
-            line = line.strip('\x09\x0a\x0d\x20')  # \t\n\r\s
-
-            comment = ''
-            if '//' in line:
-                line, comment = line.split('//', 1)
-                line = line.rstrip('\x09\x20')  # \t\s
-
-            if '{' in line:
-                stack.append(curblock)
-
-                head = line.split('{', 1)[0]
-                head = head.rstrip('\x09\x20')  # \t\s
-
-                if head.endswith(('^', '~')):
-                    curblock.sorted = head.endswith('^')
-                    head = head[:-1]
-                    head = head.rstrip('\x09\x20')  # \t\s
-                else:
-                    curblock.sorted = True
-
-                path = ''
-                if '=' in head:
-                    name, path = line.split('=', 1)
-                    name = name.rstrip('\x09\x20')  # \t\s
-                    path = path.lstrip('\x09\x20')  # \t\s
-                else:
-                    name = head
-
-                if path != '':
-                    curblock[name] = BlockPar.from_txt(path)
-                else:
-                    prevblock = curblock
-                    curblock = BlockPar()
-                    prevblock.add(name, curblock)
-
-                    level += 1
-
-            elif '}' in line:
-                if level > 0:
-                    curblock = stack.pop()
-                level -= 1
-
-            elif '=' in line:
-                name, value = line.split('=', 1)
-                name = name.rstrip('\x09\x20')  # \t\s
-                value = value.lstrip('\x09\x20')  # \t\s
+            if "=" in line:
+                name, value = line.split("=", 1)
+                name = name.rstrip("\x09\x20")
+                value = value.lstrip("\x09\x20")
 
                 # multiline parameters - heredoc
-                if value.startswith('<<<'):
-                    value = ''
-                    spacenum = 0
-                    while True:
-                        line = f.readline()
-                        line_no += 1
-                        if line == '':  # EOF
-                            raise Exception("BlockPar.load_txt: "
-                                            "heredoc end marker not found")
-
-                        if line.strip('\x09\x0a\x0d\x20') == '':
+                if value.startswith("<<<"):
+                    value = ""
+                    while line := f.readline():
+                        if line.strip("\x09\x0a\x0d\x20") == "":
                             continue
 
-                        if value == '':
-                            spacenum = len(line) - len(line.lstrip('\x20'))
-                            if spacenum > (4 * level):
-                                spacenum = 4 * level
+                        spacenum = 4 * (level + 1)
+                        if value == "":
+                            spacenum = min(spacenum, num_leading(line, "\x20"))
 
-                        if line.lstrip('\x09\x20').startswith('>>>'):
-                            value = value.rstrip('\x0a\x0d')
+                        if line.lstrip("\x09\x20").startswith(">>>"):
+                            value = value.rstrip("\x0a\x0d")
                             break
 
                         value += line[spacenum:]
+                    else:
+                        raise Exception(
+                            "BlockPar.load_txt: heredoc end marker not found"
+                        )
 
-                curblock.add(name, value)
+                self.add(name, value)
+
+            elif "{" in line:
+                head = line.split("{", 1)[0]
+                head = head.rstrip("\x09\x20")
+
+                sorted = True
+                if head.endswith(("^", "~")):
+                    sorted = head.endswith("^")
+                    head = head[:-1]
+                    head = head.rstrip("\x09\x20")
+
+                path = ""
+                if "=" in head:
+                    name, path = line.split("=", 1)
+                    name = name.rstrip("\x09\x20")
+                    path = path.lstrip("\x09\x20")
+                else:
+                    name = head
+
+                if path != "":
+                    if not os.path.exists(path):
+                        raise Exception(
+                            "BlockPar.load_txt: invalid path to load blockpar"
+                        )
+                    self.add(name, BlockPar.from_txt(path))
+                else:
+                    block = BlockPar(sort=sorted)
+                    block.load_txt(f, level=level + 1)
+                    self.add(name, block)
+
+            elif "}" in line:
+                if level > 0:
+                    break
+                else:
+                    raise Exception("BlockPar.load_txt: unexpected end of blockpar")
 
             else:
                 continue
-
-    def save_txt(self, f: TextIO):
-        is_sort = self.sorted
-        if is_sort:
-            curblock = self._search_map.__iter__()
         else:
-            curblock = self._order_map.__iter__()
-        left = len(self)
-
-        level = 0
-        stack = list()
-
-        while level > -1:
-            if left > 0:
-                node = next(curblock)
-                el = node.content
-                f.write(4 * '\x20' * level)
-
-                if el.kind == ElementKind.PARAM:
-                    f.write(el.name)
-                    f.write('=')
-                    if '\x0d' in el.content or '\x0a' in el.content:
-                        f.write('<<<')
-                        f.write('\x0d\x0a')
-                        content = el.content
-                        for s in content.splitlines(keepends=True):
-                            f.write(4 * '\x20' * level)
-                            f.write(s)
-                        f.write('\x0d\x0a')
-                        f.write(4 * '\x20' * level)
-                        f.write('>>>')
-                    else:
-                        f.write(el.content)
-                    f.write('\x0d\x0a')
-                    left -= 1
-
-                elif el.kind == ElementKind.BLOCK:
-                    stack.append((curblock, left))
-
-                    is_sort = el.content.sorted
-                    if is_sort:
-                        curblock = el.content._search_map.__iter__()
-                    else:
-                        curblock = el.content._order_map.__iter__()
-                    left = len(el.content)
-
-                    f.write(el.name)
-                    f.write('\x20')  # space
-                    if el.content.sorted:
-                        f.write('^')
-                    else:
-                        f.write('~')
-                    f.write('{')
-                    f.write('\x0d\x0a')  # \r\n
-                    level += 1
-                    continue
-
-                else:
-                    f.write('\x0d\x0a')
-            else:
-                level -= 1
-                if level > -1:
-                    f.write(4 * '\x20' * level)  # 4 spaces level padding
-                    f.write('}')
-                    f.write('\x0d\x0a')  # \r\n
-                    curblock, left = stack.pop()
-                    left -= 1
+            if level > 1:
+                raise Exception(
+                    "BlockPar.load_txt: end of file reached in nested block"
+                )
 
     def get_par(self, path: str) -> str:
-        path = path.strip().split('.')
+        parts = path.strip().split(".")
+        block = self
 
-        curblock = self
-        for part in path:
-            el = curblock._search_map.find(part)
-            if el is None:
+        for part in parts:
+            name, index = parse_index(part)
+
+            if name not in self.__keys or index >= self.__keys[name]:
                 raise Exception("BlockPar.get_par: path not exists")
+            
+            node = block._getone(name, index)
+
             if part != path[-1]:
-                if el.content.kind is not ElementKind.BLOCK:
+                if node.kind is not _Node.Kind.BLOCK:
                     raise Exception("BlockPar.get_par: path not exists")
-                curblock = el.content.content
+                block = cast(BlockPar, node.content)
+
             else:
-                if el.content.kind is not ElementKind.PARAM:
+                if node.kind is not _Node.Kind.PARAM:
                     raise Exception("BlockPar.get_par: not a parameter")
-                return el.content.content
+                return cast(str, node.content)
+            
+        assert False, "unreachable"
 
-    def get_block(self, path: str) -> 'BlockPar':
-        path = path.strip().split('.')
+    def get_block(self, path: str) -> "BlockPar":
+        parts = path.strip().split(".")
+        block = self
 
-        curblock = self
-        for part in path:
-            el = curblock._search_map.find(part)
-            if el is None:
+        for part in parts:
+            name, index = parse_index(part)
+
+            if name not in self.__keys or index >= self.__keys[name]:
                 raise Exception("BlockPar.get_par: path not exists")
-            if part != path[-1]:
-                if el.content.kind is not ElementKind.BLOCK:
-                    raise Exception("BlockPar.get_par: path not exists")
-                curblock = el.content.content
-            else:
-                if el.content.kind is not ElementKind.BLOCK:
-                    raise Exception("BlockPar.get_par: not a block")
-                return el.content.content
+            
+            node = block._getone(name, index)
 
-    def to_txt(self, path: str, encoding: str = 'cp1251'):
-        with open(path, 'wt', encoding=encoding, newline='') as txt:
+            if part != path[-1]:
+                if node.kind is not _Node.Kind.BLOCK:
+                    raise Exception("BlockPar.get_par: path not exists")
+                block = cast(BlockPar, node.content)
+
+            else:
+                if node.kind is not _Node.Kind.BLOCK:
+                    raise Exception("BlockPar.get_par: not a block")
+                return cast(BlockPar, node.content)
+            
+        assert False, "unreachable"
+
+    def to_txt(self, path: str, encoding: str = "cp1251"):
+        with open(path, "wt", encoding=encoding, newline="") as txt:
             self.save_txt(txt)
 
     @classmethod
-    def from_txt(cls, path: str, encoding: str = 'cp1251') -> 'BlockPar':
+    def from_txt(cls, path: str, encoding: str = "cp1251") -> "BlockPar":
         blockpar = cls()
-        with open(path, 'rt', encoding=encoding, newline='') as txt:
+        with open(path, "rt", encoding=encoding, newline="") as txt:
             blockpar.load_txt(txt)
         return blockpar
 
     @classmethod
-    def from_dat(cls, path: str) -> 'BlockPar':
+    def from_dat(cls, path: str) -> "BlockPar":
         blockpar = None
-        seed_key = b'\x89\xc6\xe8\xb1'
+        seed_key = b"\x89\xc6\xe8\xb1"
 
         b = Buffer.from_file(path)
 
@@ -454,4 +477,3 @@ class BlockPar:
             raise Exception("BlockPar.from_dat: wrong content hash")
 
         return blockpar
-
