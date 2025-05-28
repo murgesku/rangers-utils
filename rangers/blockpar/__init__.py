@@ -1,1 +1,1 @@
-from ._blockpar import *
+from .blockpar import *
