@@ -124,10 +124,10 @@ class BlockPar:
     def get(self, key: str, *, default: Content | None) -> Content | None: ...
     @overload
     def get(
-        self, key: str, index: int | None, *, default: Content | None
+        self, key: str, index: int, *, default: Content | None
     ) -> Content | None: ...
     def get(
-        self, key: str, index: int | None = None, *, default: Content | None = None
+        self, key: str, index: int = 0, *, default: Content | None = None
     ) -> Content | None:
         return self.getone(key, index, default=default)
 
@@ -139,12 +139,12 @@ class BlockPar:
     def getone(self, key: str, *, default: Content | None) -> Content | None: ...
     @overload
     def getone(
-        self, key: str, index: int | None, *, default: Content | None
+        self, key: str, index: int, *, default: Content | None
     ) -> Content | None: ...
     def getone(
         self,
         key: str,
-        index: int | None = None,
+        index: int = 0,
         *,
         default: Content | None | _SENTINEL = sentinel,
     ) -> Content | None:
@@ -153,13 +153,12 @@ class BlockPar:
                 raise KeyError(key)
             return cast(Content | None, default)
 
-        idx = 0 if index is None else index
-        if idx >= self.__keys[key]:
+        if index >= self.__keys[key]:
             if default is sentinel:
-                raise IndexError(f"Index {idx} out of range for key '{key}'")
+                raise IndexError(f"Index {index} out of range for key '{key}'")
             return cast(Content | None, default)
 
-        return self._getone(key, idx).content
+        return self._getone(key, index).content
 
     @overload
     def getall(self, key: str) -> list[Content]: ...
