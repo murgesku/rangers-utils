@@ -78,14 +78,7 @@ class BlockPar:
         self.sorted = sort
 
     def __delitem__(self, key: str) -> None:
-        if key in self.__keys:
-            if self.sorted:
-                begin = bisect_left(self.__content, key)
-                end = bisect_right(self.__content, key)
-                del self.__content[begin:end]
-            else:
-                self.__content = [node for node in self.__content if node.name != key]
-        del self.__keys[key]
+        self.delete(key)
 
     def __contains__(self, key: str) -> bool:
         return key in self.__keys
@@ -99,10 +92,56 @@ class BlockPar:
             if node.content is None:
                 continue
             yield (node.name, node.content)
+    
+    def _clamp(self, key: str, index: int) -> int:
+        count = self.__keys[key]
+        return count - (~index) if index < 0 else index
+    
+    def _in_bounds(self, key: str, index: int) -> bool:
+        count = self.__keys[key]
+        if 0 <= index < count:
+            return True
+        return False
 
     def clear(self) -> None:
         self.__content.clear()
         self.__keys.clear()
+    
+    @overload
+    def delete(self, key: str) -> None: ...
+    @overload
+    def delete(self, key: str, index: int) -> None: ...
+    def delete(self, key: str, index: int | _SENTINEL = sentinel) -> None:
+        if key not in self.__keys:
+            return
+
+        is_indexed = index is not sentinel
+        if is_indexed:
+            index = self._clamp(key, cast(int, index))
+            if not self._in_bounds(key, index):
+                raise IndexError(f"Index {index} out of range for key '{key}'")
+
+        if self.sorted:
+            begin = bisect_left(self.__content, key)
+            end = bisect_right(self.__content, key)
+            if is_indexed:
+                index = cast(int, index)
+                del self.__content[begin + index]
+            else:
+                del self.__content[begin:end]
+                del self.__keys[key]
+        else:
+            if is_indexed:
+                index = cast(int, index)
+                for i, node in enumerate(self.__content):
+                    if node.name == key:
+                        if index < 0:
+                            del self.__content[i]
+                            break
+                        index -= 1
+            else:
+                self.__content = [node for node in self.__content if node.name != key]
+                del self.__keys[key]
 
     def add(self, key: str, value: Content) -> None:
         node = _Node(key, value)
@@ -153,7 +192,8 @@ class BlockPar:
                 raise KeyError(key)
             return cast(Content | None, default)
 
-        if index >= self.__keys[key]:
+        index = self._clamp(key, index)
+        if not self._in_bounds(key, index):
             if default is sentinel:
                 raise IndexError(f"Index {index} out of range for key '{key}'")
             return cast(Content | None, default)
@@ -396,8 +436,11 @@ class BlockPar:
         for part in parts:
             name, index = parse_index(part)
 
-            if name not in self.__keys or index >= self.__keys[name]:
+            if name not in self.__keys:
                 raise Exception("BlockPar.get_par: path not exists")
+            index = self._clamp(name, index)
+            if not self._in_bounds(name, index):
+                raise Exception(f"BlockPar.get_par: index out of range in '{name}'")
             
             node = block._getone(name, index)
 
@@ -420,8 +463,11 @@ class BlockPar:
         for part in parts:
             name, index = parse_index(part)
 
-            if name not in self.__keys or index >= self.__keys[name]:
+            if name not in self.__keys:
                 raise Exception("BlockPar.get_par: path not exists")
+            index = self._clamp(name, index)
+            if not self._in_bounds(name, index):
+                raise Exception(f"BlockPar.get_par: index out of range in '{name}'")
             
             node = block._getone(name, index)
 
