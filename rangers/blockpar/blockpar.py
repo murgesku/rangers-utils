@@ -18,6 +18,13 @@ Content: TypeAlias = Union[str, "BlockPar"]
 
 @total_ordering
 class _Node:
+    """
+    Internal class representing a single entry in BlockPar.
+
+    Can be either:
+    - parameter (par): a simple key-value pair (string).
+    - block: a nested BlockPar instance.
+    """
     class Kind(IntEnum):
         UNDEF = 0
         PARAM = 1
@@ -47,6 +54,10 @@ class _Node:
         return f'<{self.kind.name}: "{self.name}">'
 
     def __lt__(self, other: object) -> bool:
+        """
+        Allows nodes to be compared or sorted by name.
+        Also supports comparison to a raw string (node name).
+        """
         if isinstance(other, _Node):
             return self.name < other.name
         elif isinstance(other, str):
@@ -54,6 +65,9 @@ class _Node:
         return NotImplemented
 
     def __eq__(self, other: object) -> bool:
+        """
+        Equality based on node name. Supports comparison to another node or a string.
+        """
         if isinstance(other, _Node):
             return self.name == other.name
         elif isinstance(other, str):
@@ -70,6 +84,12 @@ sentinel = _SENTINEL.sentinel
 
 
 class BlockPar:
+    """
+    A hierarchical key-value data structure with support for nested blocks,
+    sorted/unordered storage, serialization, and deserialization.
+
+    Supports both binary and textual file formats.
+    """
     __content: list[_Node]
     __keys: Counter[str]
 
@@ -88,23 +108,35 @@ class BlockPar:
         return len(self.__content)
 
     def __iter__(self) -> Generator[tuple[str, Content], None, None]:
+        """
+        Iterates over all key-content pairs, skipping undefined entries.
+        """
         src = iter(self.__content)
         while (node := next(src, _TERMINAL)) is not _TERMINAL:
             if node.content is None:
                 continue
             yield (node.name, node.content)
 
-    def _clamp(self, key: str, index: int) -> int:
+    def _idx_to_abs(self, key: str, index: int) -> int:
+        """
+        Converts a negative index to a positive one.
+        """
         count = self.__keys[key]
-        return count - (~index) if index < 0 else index
+        return count - index if index < 0 else index
 
-    def _in_bounds(self, key: str, index: int) -> bool:
+    def _idx_in_bounds(self, key: str, index: int) -> bool:
+        """
+        Checks whether the given index is within the valid range for the key.
+        """
         count = self.__keys[key]
         if 0 <= index < count:
             return True
         return False
 
     def clear(self) -> None:
+        """
+        Removes all entries from the block.
+        """
         self.__content.clear()
         self.__keys.clear()
 
@@ -113,13 +145,22 @@ class BlockPar:
     @overload
     def delete(self, key: str, index: int) -> None: ...
     def delete(self, key: str, index: int | _SENTINEL = sentinel) -> None:
+        """
+        Deletes one or all entries associated with the given key.
+
+        Parameters:
+        - key: the name of the key.
+        - index: optional index of the specific occurrence to delete.
+
+        Raises IndexError if index is out of bounds.
+        """
         if key not in self.__keys:
             return
 
         is_indexed = index is not sentinel
         if is_indexed:
-            index = self._clamp(key, cast(int, index))
-            if not self._in_bounds(key, index):
+            index = self._idx_to_abs(key, cast(int, index))
+            if not self._idx_in_bounds(key, index):
                 raise IndexError(f"Index {index} out of range for key '{key}'")
 
         if self.sorted:
@@ -145,6 +186,10 @@ class BlockPar:
                 del self.__keys[key]
 
     def add(self, key: str, value: Content) -> None:
+        """
+        Adds a key-value pair to the block. Multiple values under the same key are allowed.
+        If sorted, inserts in order.
+        """
         node = _Node(key, value)
         if self.sorted:
             insort_right(self.__content, node)
@@ -153,6 +198,9 @@ class BlockPar:
         self.__keys[key] += 1
 
     def set(self, key: str, value: Content) -> None:
+        """
+        Sets a value for a key, replacing any existing entries for that key.
+        """
         del self[key]
         self.add(key, value)
 
@@ -169,6 +217,10 @@ class BlockPar:
     def get(
         self, key: str, index: int = 0, *, default: Content | None = None
     ) -> Content | None:
+        """
+        Returns content under the given key and optional index.
+        Returns default if key/index is not found.
+        """
         return self.getone(key, index, default=default)
 
     @overload
@@ -188,13 +240,19 @@ class BlockPar:
         *,
         default: Content | None | _SENTINEL = sentinel,
     ) -> Content | None:
+        """
+        Same as get(), but raises KeyError or IndexError if the key or index is missing
+        and no default is provided.
+        """
+        # `sentinel` is used to distinguish between no default value and an explicit None
+
         if key not in self.__keys:
             if default is sentinel:
                 raise KeyError(key)
             return cast(Content | None, default)
 
-        index = self._clamp(key, index)
-        if not self._in_bounds(key, index):
+        index = self._idx_to_abs(key, index)
+        if not self._idx_in_bounds(key, index):
             if default is sentinel:
                 raise IndexError(f"Index {index} out of range for key '{key}'")
             return cast(Content | None, default)
@@ -210,6 +268,12 @@ class BlockPar:
     def getall(
         self, key: str, *, default: list[Content] | None | _SENTINEL = sentinel
     ) -> list[Content] | None:
+        """
+        Returns all content items associated with a given key.
+        Returns default if the key doesn't exist.
+        """
+        # `sentinel` is used to distinguish between no default value and an explicit None
+
         if key not in self.__keys:
             if default is sentinel:
                 raise KeyError(key)
@@ -238,6 +302,15 @@ class BlockPar:
             return [node for node in self.__content if node.name == key]
 
     def save(self, s: AbstractIO, *, new_format: bool = False):
+        """
+        Saves the current structure to a binary stream.
+
+        Parameters:
+        - s: AbstractIO-like object.
+        - new_format: enables block indexing and count optimization for sorted blocks.
+        """
+        # `new_format` introduces optional fields like index/count in saved data.
+
         s.add_bool(self.sorted)
         s.add_uint(len(self))
 
@@ -272,6 +345,13 @@ class BlockPar:
                     continue
 
     def load(self, s: AbstractIO, *, new_format: bool = False):
+        """
+        Loads the structure from a binary stream.
+
+        Parameters:
+        - s: AbstractIO-like object.
+        - new_format: expects additional indexing metadata for sorted blocks.
+        """
         self.clear()
 
         self.sorted = s.get_bool()
@@ -305,6 +385,13 @@ class BlockPar:
             remain -= 1
 
     def save_txt(self, f: TextIO, *, level: int = 0):
+        """
+        Saves the structure as human-readable indented text.
+
+        Supports:
+        - Multiline values via heredoc (<<< ... >>>)
+        - Comments prefixed by `//`
+        """
         for node in self.__content:
             f.write(4 * "\x20" * level)
 
@@ -349,6 +436,19 @@ class BlockPar:
                     continue
 
     def load_txt(self, f: TextIO, *, level: int = 0):
+        """
+        Loads a BlockPar structure from formatted text.
+
+        Detects:
+        - Heredoc-style multiline values (<<< ... >>>)
+        - External block references
+
+        Raises:
+        - BlockParFormatError on format inconsistencies
+        - FileNotFoundError if referenced external files are missing
+        """
+        # leading space normalization for heredocs is done via num_leading()
+
         self.clear()
         self.sorted = level == 0
 
@@ -403,16 +503,16 @@ class BlockPar:
                 else:
                     name = head
 
+                block = BlockPar(sort=sorted)
                 if path != "":
                     if not os.path.exists(path):
                         raise FileNotFoundError(
                             "Referenced file for block does not exist"
                         )
-                    self.add(name, BlockPar.from_txt(path))
+                    block.from_txt(path)
                 else:
-                    block = BlockPar(sort=sorted)
                     block.load_txt(f, level=level + 1)
-                    self.add(name, block)
+                self.add(name, block)
 
             elif "}" in line:
                 if level > 0:
@@ -429,12 +529,28 @@ class BlockPar:
                 )
 
     def get_par(self, path: str) -> str:
+        """
+        Retrieves a parameter (string) by path in the form of `block1.block2.param[0]`.
+
+        Raises:
+        - ValueError if the path does not point to a parameter.
+        - IndexError if the path contains index and the index is out of range.
+        - BlockParPathError if path does not point anywhere.
+        """
         node = self._get_path(path)
         if node.kind != _Node.Kind.PARAM:
             raise ValueError(f"Not a parameter: '{path}'")
         return cast(str, node.content)
 
     def get_block(self, path: str) -> "BlockPar":
+        """
+        Retrieves a nested BlockPar by path in the form of `block1.block2.block[0]`.
+
+        Raises:
+        - ValueError if the path does not point to a block.
+        - IndexError if the path contains an index and the index is out of range.
+        - BlockParPathError if path does not point anywhere.
+        """
         node = self._get_path(path)
         if node.kind != _Node.Kind.BLOCK:
             raise ValueError(f"Not a block: '{path}'")
@@ -449,8 +565,8 @@ class BlockPar:
 
             if name not in self.__keys:
                 raise BlockParPathError(f"Path component '{name}' does not exist")
-            index = self._clamp(name, index)
-            if not self._in_bounds(name, index):
+            index = self._idx_to_abs(name, index)
+            if not self._idx_in_bounds(name, index):
                 raise IndexError(f"Index is out of range in '{part}'")
 
             node = block._getone(name, index)
@@ -468,19 +584,36 @@ class BlockPar:
         assert False, "unreachable"
 
     def to_txt(self, path: str, encoding: str = "cp1251"):
+        """
+        Saves the BlockPar as a text file.
+
+        Parameters:
+        - path: file path to save to
+        - encoding: file encoding (default: cp1251)
+        """
         with open(path, "wt", encoding=encoding, newline="") as txt:
             self.save_txt(txt)
 
-    @classmethod
-    def from_txt(cls, path: str, encoding: str = "cp1251") -> "BlockPar":
-        blockpar = cls()
-        with open(path, "rt", encoding=encoding, newline="") as txt:
-            blockpar.load_txt(txt)
-        return blockpar
+    def from_txt(self, path: str, encoding: str = "cp1251") -> None:
+        """
+        Loads a BlockPar instance from a text file.
 
-    @classmethod
-    def from_dat(cls, path: str) -> "BlockPar":
-        blockpar = None
+        Parameters:
+        - path: file path to save to
+        - encoding: file encoding (default: cp1251)
+        """
+        with open(path, "rt", encoding=encoding, newline="") as txt:
+            self.load_txt(txt)
+
+    def from_dat(self, path: str) -> None:
+        """
+        Loads a BlockPar from a binary `.dat` file.
+
+        Verifies the content hash and decompresses the payload.
+
+        Raises:
+        - BlockParContentHashError if integrity check fails
+        """
         seed_key = b"\x89\xc6\xe8\xb1"
 
         b = Buffer.from_file(path)
@@ -498,11 +631,8 @@ class BlockPar:
         if calc_hash == content_hash:
             unpacked = Buffer.from_bytes(b.decompress(size))
             b.close()
-            blockpar = cls()
-            blockpar.load(unpacked, new_format=True)
+            self.load(unpacked, new_format=True)
             unpacked.close()
         else:
             b.close()
             raise BlockParContentHashError("Wrong content hash in .dat file")
-
-        return blockpar
