@@ -9,6 +9,7 @@ from enum import IntEnum, Enum
 from functools import total_ordering
 from typing import Generator, TextIO, TypeAlias, Union, cast, overload
 
+from .exceptions import BlockParPathError, BlockParFormatError, BlockParContentHashError
 from rangers.io import AbstractIO, Buffer
 from rangers.utils import bytes_to_int, bytes_xor, num_leading, parse_index
 
@@ -92,11 +93,11 @@ class BlockPar:
             if node.content is None:
                 continue
             yield (node.name, node.content)
-    
+
     def _clamp(self, key: str, index: int) -> int:
         count = self.__keys[key]
         return count - (~index) if index < 0 else index
-    
+
     def _in_bounds(self, key: str, index: int) -> bool:
         count = self.__keys[key]
         if 0 <= index < count:
@@ -106,7 +107,7 @@ class BlockPar:
     def clear(self) -> None:
         self.__content.clear()
         self.__keys.clear()
-    
+
     @overload
     def delete(self, key: str) -> None: ...
     @overload
@@ -380,9 +381,7 @@ class BlockPar:
 
                         value += line[spacenum:]
                     else:
-                        raise Exception(
-                            "BlockPar.load_txt: heredoc end marker not found"
-                        )
+                        raise BlockParFormatError("Heredoc end marker not found")
 
                 self.add(name, value)
 
@@ -406,8 +405,8 @@ class BlockPar:
 
                 if path != "":
                     if not os.path.exists(path):
-                        raise Exception(
-                            "BlockPar.load_txt: invalid path to load blockpar"
+                        raise FileNotFoundError(
+                            "Referenced file for block does not exist"
                         )
                     self.add(name, BlockPar.from_txt(path))
                 else:
@@ -419,44 +418,29 @@ class BlockPar:
                 if level > 0:
                     break
                 else:
-                    raise Exception("BlockPar.load_txt: unexpected end of blockpar")
+                    raise BlockParFormatError("Unexpected end of blockpar")
 
             else:
                 continue
         else:
             if level > 1:
-                raise Exception(
-                    "BlockPar.load_txt: end of file reached in nested block"
+                raise BlockParFormatError(
+                    "Unexpected end of file while parsing nested block"
                 )
 
     def get_par(self, path: str) -> str:
-        parts = path.strip().split(".")
-        block = self
-
-        for part in parts:
-            name, index = parse_index(part)
-
-            if name not in self.__keys:
-                raise Exception("BlockPar.get_par: path not exists")
-            index = self._clamp(name, index)
-            if not self._in_bounds(name, index):
-                raise Exception(f"BlockPar.get_par: index out of range in '{name}'")
-            
-            node = block._getone(name, index)
-
-            if part != path[-1]:
-                if node.kind is not _Node.Kind.BLOCK:
-                    raise Exception("BlockPar.get_par: path not exists")
-                block = cast(BlockPar, node.content)
-
-            else:
-                if node.kind is not _Node.Kind.PARAM:
-                    raise Exception("BlockPar.get_par: not a parameter")
-                return cast(str, node.content)
-            
-        assert False, "unreachable"
+        node = self._get_path(path)
+        if node.kind != _Node.Kind.PARAM:
+            raise ValueError(f"Not a parameter: '{path}'")
+        return cast(str, node.content)
 
     def get_block(self, path: str) -> "BlockPar":
+        node = self._get_path(path)
+        if node.kind != _Node.Kind.BLOCK:
+            raise ValueError(f"Not a block: '{path}'")
+        return cast(BlockPar, node.content)
+
+    def _get_path(self, path: str) -> _Node:
         parts = path.strip().split(".")
         block = self
 
@@ -464,23 +448,23 @@ class BlockPar:
             name, index = parse_index(part)
 
             if name not in self.__keys:
-                raise Exception("BlockPar.get_par: path not exists")
+                raise BlockParPathError(f"Path component '{name}' does not exist")
             index = self._clamp(name, index)
             if not self._in_bounds(name, index):
-                raise Exception(f"BlockPar.get_par: index out of range in '{name}'")
-            
+                raise IndexError(f"Index is out of range in '{part}'")
+
             node = block._getone(name, index)
 
-            if part != path[-1]:
-                if node.kind is not _Node.Kind.BLOCK:
-                    raise Exception("BlockPar.get_par: path not exists")
+            if part != parts[-1]:
+                if node.kind is not _Node.Kind.BLOCK or node.content is None:
+                    raise BlockParPathError(f"Path does not exist: '{path}'")
                 block = cast(BlockPar, node.content)
 
             else:
-                if node.kind is not _Node.Kind.BLOCK:
-                    raise Exception("BlockPar.get_par: not a block")
-                return cast(BlockPar, node.content)
-            
+                if node.content is None:
+                    raise ValueError(f"Invalid data: '{path}'")
+                return node
+
         assert False, "unreachable"
 
     def to_txt(self, path: str, encoding: str = "cp1251"):
@@ -519,6 +503,6 @@ class BlockPar:
             unpacked.close()
         else:
             b.close()
-            raise Exception("BlockPar.from_dat: wrong content hash")
+            raise BlockParContentHashError("Wrong content hash in .dat file")
 
         return blockpar
