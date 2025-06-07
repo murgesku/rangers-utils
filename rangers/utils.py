@@ -105,7 +105,9 @@ def parse_index(s: str, strict: bool = False) -> tuple[str, int]:
     Returns:
         tuple[str, int]: A tuple containing the name and the parsed index.
     """
-    name, index = s.strip().rstrip("]").split("[", 1)
+    values = s.strip().rstrip("]").split("[", 1)
+    name = values[0]
+    index = values[1] if len(values) > 1 else 0
     try:
         return name, int(index)
     except ValueError:

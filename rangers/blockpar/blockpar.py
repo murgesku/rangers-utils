@@ -5,6 +5,7 @@ __all__ = [
 import os.path
 from bisect import bisect_left, bisect_right, insort_right
 from collections import Counter
+from dataclasses import dataclass
 from enum import IntEnum, Enum
 from functools import total_ordering
 from typing import Generator, TextIO, TypeAlias, Union, cast, overload
@@ -16,7 +17,14 @@ from rangers.utils import bytes_to_int, bytes_xor, num_leading, parse_index
 Content: TypeAlias = Union[str, "BlockPar"]
 
 
+class _NodeKind(IntEnum):
+    UNDEF = 0
+    PARAM = 1
+    BLOCK = 2
+
+
 @total_ordering
+@dataclass
 class _Node:
     """
     Internal class representing a single entry in BlockPar.
@@ -25,33 +33,10 @@ class _Node:
     - parameter (par): a simple key-value pair (string).
     - block: a nested BlockPar instance.
     """
-    class Kind(IntEnum):
-        UNDEF = 0
-        PARAM = 1
-        BLOCK = 2
-
-    __slots__ = ("kind", "name", "content", "comment")
-
-    kind: Kind
-    name: str
-    content: Content | None
-    comment: str
-
-    def __init__(
-        self, name: str = "", content: Content | None = None, comment: str = ""
-    ):
-        self.name = name
-        if isinstance(content, str):
-            self.kind = _Node.Kind.PARAM
-        elif isinstance(content, BlockPar):
-            self.kind = _Node.Kind.BLOCK
-        else:
-            self.kind = _Node.Kind.UNDEF
-        self.content = content
-        self.comment = comment
-
-    def __repr__(self):
-        return f'<{self.kind.name}: "{self.name}">'
+    kind: _NodeKind = _NodeKind.UNDEF
+    name: str = ""
+    content: Content | None = None
+    comment: str = ""
 
     def __lt__(self, other: object) -> bool:
         """
@@ -122,7 +107,7 @@ class BlockPar:
         Converts a negative index to a positive one.
         """
         count = self.__keys[key]
-        return count - index if index < 0 else index
+        return count + index if index < 0 else index
 
     def _idx_in_bounds(self, key: str, index: int) -> bool:
         """
@@ -177,7 +162,7 @@ class BlockPar:
                 index = cast(int, index)
                 for i, node in enumerate(self.__content):
                     if node.name == key:
-                        if index < 0:
+                        if index == 0:
                             del self.__content[i]
                             break
                         index -= 1
@@ -190,7 +175,12 @@ class BlockPar:
         Adds a key-value pair to the block. Multiple values under the same key are allowed.
         If sorted, inserts in order.
         """
-        node = _Node(key, value)
+        kind = _NodeKind.UNDEF
+        if isinstance(value, str):
+            kind = _NodeKind.PARAM
+        elif isinstance(value, BlockPar): # type: ignore
+            kind = _NodeKind.BLOCK
+        node = _Node(kind, key, value)
         if self.sorted:
             insort_right(self.__content, node)
         else:
@@ -330,15 +320,15 @@ class BlockPar:
                 s.add_uint(count)
                 index += 1
 
-            if node.kind != _Node.Kind.UNDEF:
+            if node.kind != _NodeKind.UNDEF:
                 s.add_byte(node.kind)
                 s.add_widestr(node.name)
 
             match node.kind:
-                case _Node.Kind.PARAM:
+                case _NodeKind.PARAM:
                     s.add_widestr(cast(str, node.content))
 
-                case _Node.Kind.BLOCK:
+                case _NodeKind.BLOCK:
                     cast(BlockPar, node.content).save(s, new_format=new_format)
 
                 case _:
@@ -363,18 +353,18 @@ class BlockPar:
                 s.get_uint()  # index
                 count = s.get_uint()
 
-            kind = _Node.Kind(s.get_byte())
+            kind = _NodeKind(s.get_byte())
             name = s.get_widestr()
 
             if count > 0:
                 self.__keys[name] = count
 
             match kind:
-                case _Node.Kind.PARAM:
+                case _NodeKind.PARAM:
                     content = s.get_widestr()
                     self.add(name, content)
 
-                case _Node.Kind.BLOCK:
+                case _NodeKind.BLOCK:
                     content = BlockPar()
                     content.load(s, new_format=new_format)
                     self.add(name, content)
@@ -396,7 +386,7 @@ class BlockPar:
             f.write(4 * "\x20" * level)
 
             match node.kind:
-                case _Node.Kind.PARAM:
+                case _NodeKind.PARAM:
                     content = cast(str, node.content)
 
                     f.write(node.name)
@@ -419,7 +409,7 @@ class BlockPar:
 
                     f.write("\x0d\x0a")
 
-                case _Node.Kind.BLOCK:
+                case _NodeKind.BLOCK:
                     content = cast(BlockPar, node.content)
                     f.write(node.name)
                     f.write(" ")
@@ -467,11 +457,11 @@ class BlockPar:
                 # multiline parameters - heredoc
                 if value.startswith("<<<"):
                     value = ""
+                    spacenum = 4 * (level + 1)
                     while line := f.readline():
                         if line.strip("\x09\x0a\x0d\x20") == "":
                             continue
 
-                        spacenum = 4 * (level + 1)
                         if value == "":
                             spacenum = min(spacenum, num_leading(line, "\x20"))
 
@@ -538,7 +528,7 @@ class BlockPar:
         - BlockParPathError if path does not point anywhere.
         """
         node = self._get_path(path)
-        if node.kind != _Node.Kind.PARAM:
+        if node.kind != _NodeKind.PARAM:
             raise ValueError(f"Not a parameter: '{path}'")
         return cast(str, node.content)
 
@@ -552,7 +542,7 @@ class BlockPar:
         - BlockParPathError if path does not point anywhere.
         """
         node = self._get_path(path)
-        if node.kind != _Node.Kind.BLOCK:
+        if node.kind != _NodeKind.BLOCK:
             raise ValueError(f"Not a block: '{path}'")
         return cast(BlockPar, node.content)
 
@@ -563,16 +553,16 @@ class BlockPar:
         for part in parts:
             name, index = parse_index(part)
 
-            if name not in self.__keys:
+            if name not in block.__keys:
                 raise BlockParPathError(f"Path component '{name}' does not exist")
-            index = self._idx_to_abs(name, index)
-            if not self._idx_in_bounds(name, index):
+            index = block._idx_to_abs(name, index)
+            if not block._idx_in_bounds(name, index):
                 raise IndexError(f"Index is out of range in '{part}'")
 
             node = block._getone(name, index)
 
             if part != parts[-1]:
-                if node.kind is not _Node.Kind.BLOCK or node.content is None:
+                if node.kind is not _NodeKind.BLOCK or node.content is None:
                     raise BlockParPathError(f"Path does not exist: '{path}'")
                 block = cast(BlockPar, node.content)
 
