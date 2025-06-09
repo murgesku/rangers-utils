@@ -33,6 +33,7 @@ class _Node:
     - parameter (par): a simple key-value pair (string).
     - block: a nested BlockPar instance.
     """
+
     kind: _NodeKind = _NodeKind.UNDEF
     name: str = ""
     content: Content | None = None
@@ -75,6 +76,7 @@ class BlockPar:
 
     Supports both binary and textual file formats.
     """
+
     __content: list[_Node]
     __keys: Counter[str]
 
@@ -178,7 +180,7 @@ class BlockPar:
         kind = _NodeKind.UNDEF
         if isinstance(value, str):
             kind = _NodeKind.PARAM
-        elif isinstance(value, BlockPar): # type: ignore
+        elif isinstance(value, BlockPar):  # type: ignore
             kind = _NodeKind.BLOCK
         node = _Node(kind, key, value)
         if self.sorted:
@@ -291,24 +293,23 @@ class BlockPar:
         else:
             return [node for node in self.__content if node.name == key]
 
-    def save(self, s: AbstractIO, *, new_format: bool = False):
+    def save(self, s: AbstractIO, *, is_cachedata: bool = False) -> None:
         """
         Saves the current structure to a binary stream.
 
         Parameters:
         - s: AbstractIO-like object.
-        - new_format: enables block indexing and count optimization for sorted blocks.
+        - is_cachedata: whether the BlockPar is a CacheData, that use more simple layout.
         """
-        # `new_format` introduces optional fields like index/count in saved data.
-
-        s.add_bool(self.sorted)
+        if not is_cachedata:
+            s.add_bool(self.sorted)
         s.add_uint(len(self))
 
         prev_name = None
         index = 0
 
         for node in self.__content:
-            if new_format and self.sorted:
+            if not is_cachedata and self.sorted:
                 if node.name != prev_name:
                     prev_name = node.name
                     index = 0
@@ -329,35 +330,34 @@ class BlockPar:
                     s.add_widestr(cast(str, node.content))
 
                 case _NodeKind.BLOCK:
-                    cast(BlockPar, node.content).save(s, new_format=new_format)
+                    cast(BlockPar, node.content).save(s, is_cachedata=is_cachedata)
 
                 case _:
                     continue
 
-    def load(self, s: AbstractIO, *, new_format: bool = False):
+    def load(self, s: AbstractIO, *, is_cachedata: bool = False) -> None:
         """
         Loads the structure from a binary stream.
 
         Parameters:
         - s: AbstractIO-like object.
-        - new_format: expects additional indexing metadata for sorted blocks.
+        - is_cachedata: whether the BlockPar is a CacheData, that use more simple layouts.
         """
         self.clear()
 
-        self.sorted = s.get_bool()
+        if is_cachedata:
+            self.sorted = True
+        else:
+            self.sorted = s.get_bool()
         remain = s.get_uint()
 
         while remain > 0:
-            count = 0
-            if new_format and self.sorted:
+            if not is_cachedata and self.sorted:
                 s.get_uint()  # index
-                count = s.get_uint()
+                s.get_uint()  # count
 
             kind = _NodeKind(s.get_byte())
             name = s.get_widestr()
-
-            if count > 0:
-                self.__keys[name] = count
 
             match kind:
                 case _NodeKind.PARAM:
@@ -366,7 +366,7 @@ class BlockPar:
 
                 case _NodeKind.BLOCK:
                     content = BlockPar()
-                    content.load(s, new_format=new_format)
+                    content.load(s, is_cachedata=is_cachedata)
                     self.add(name, content)
 
                 case _:
@@ -374,7 +374,7 @@ class BlockPar:
 
             remain -= 1
 
-    def save_txt(self, f: TextIO, *, level: int = 0):
+    def save_txt(self, f: TextIO, *, level: int = 0) -> None:
         """
         Saves the structure as human-readable indented text.
 
@@ -425,7 +425,7 @@ class BlockPar:
                 case _:
                     continue
 
-    def load_txt(self, f: TextIO, *, level: int = 0):
+    def load_txt(self, f: TextIO, *, level: int = 0) -> None:
         """
         Loads a BlockPar structure from formatted text.
 
@@ -573,7 +573,7 @@ class BlockPar:
 
         assert False, "unreachable"
 
-    def to_txt(self, path: str, encoding: str = "cp1251"):
+    def to_txt(self, path: str, encoding: str = "cp1251") -> None:
         """
         Saves the BlockPar as a text file.
 
@@ -595,7 +595,7 @@ class BlockPar:
         with open(path, "rt", encoding=encoding, newline="") as txt:
             self.load_txt(txt)
 
-    def from_dat(self, path: str) -> None:
+    def from_dat(self, path: str, *, is_cachedata: bool = False) -> None:
         """
         Loads a BlockPar from a binary `.dat` file.
 
@@ -604,7 +604,10 @@ class BlockPar:
         Raises:
         - BlockParContentHashError if integrity check fails
         """
-        seed_key = b"\x89\xc6\xe8\xb1"
+        if is_cachedata:
+            seed_key = b"\x37\x3f\x8f\xea"
+        else:
+            seed_key = b"\x89\xc6\xe8\xb1"
 
         b = Buffer.from_file(path)
 
@@ -621,7 +624,7 @@ class BlockPar:
         if calc_hash == content_hash:
             unpacked = Buffer.from_bytes(b.decompress(size))
             b.close()
-            self.load(unpacked, new_format=True)
+            self.load(unpacked, is_cachedata=is_cachedata)
             unpacked.close()
         else:
             b.close()
