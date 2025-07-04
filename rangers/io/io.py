@@ -7,7 +7,6 @@ __all__ = [
     "write_single",
     "write_double",
     "write_widestr",
-    "write_struct",
     "read_bool",
     "read_byte",
     "read_word",
@@ -16,25 +15,19 @@ __all__ = [
     "read_single",
     "read_double",
     "read_widestr",
-    "read_struct",
     "cipher_xor",
     "zl_compress",
     "zl_decompress",
-    "TypedStruct",
 ]
 
 import math
 import zlib
-from collections import namedtuple
 from io import SEEK_CUR, BytesIO
 from struct import pack, unpack
 from typing import (
-    Any,
     BinaryIO,
-    Callable,
     Generator,
     Literal,
-    NamedTuple,
     TypeAlias,
 )
 
@@ -86,15 +79,6 @@ def write_widestr(dst: BinaryIO, val: str) -> None:
     """Write a UTF-16LE encoded null-terminated string to a binary stream."""
     dst.write(val.encode("utf-16le"))
     dst.write(b"\x00\x00")
-
-
-def write_struct(dst: BinaryIO, val: NamedTuple) -> None:
-    """Write a custom typed struct to a binary stream using the cached schema."""
-    structname = val.__class__.__name__
-    if structname in TypedStruct.structs_cache:
-        TypedStruct.structs_cache[structname].write(dst, val)
-        return
-    return NotImplemented  # type: ignore
 
 
 def read_bool(src: BinaryIO) -> bool:
@@ -149,11 +133,6 @@ def read_widestr(src: BinaryIO) -> str:
     s = src.read(size).decode("utf-16le")
     src.seek(2, SEEK_CUR)
     return s
-
-
-def read_struct(src: BinaryIO, t: "TypedStruct") -> NamedTuple:
-    """Read a custom typed struct from a binary stream using the given TypedStruct schema."""
-    return t.read(src)
 
 
 def zl_compress(data: bytes | bytearray | memoryview, fmt: ZLFormats) -> bytes:
@@ -263,110 +242,3 @@ def cipher_xor(data: bytearray | memoryview, key: int):
     gen = _rand31pm(key)
     for i in range(len(data)):
         data[i] = data[i] ^ (next(gen) & 255)
-
-
-class TypedStruct:
-    """
-    A schema for reading and writing structured binary data using named fields.
-
-    Attributes:
-        structs_cache: Cache of defined TypedStructs by name.
-        io_map: Mapping of primitive types to their read/write functions.
-    """
-
-    structs_cache: dict[str, "TypedStruct"] = {}
-    io_map: dict[
-        str, tuple[Callable[[BinaryIO], Any], Callable[[BinaryIO, Any], None]]
-    ] = {
-        "bool": (read_bool, write_bool),
-        "byte": (read_byte, write_byte),
-        "word": (read_word, write_word),
-        "int": (read_int, write_int),
-        "uint": (read_uint, write_uint),
-        "single": (read_single, write_single),
-        "double": (read_double, write_double),
-        "widestr": (read_widestr, write_widestr),
-    }
-
-    def __init__(self, name: str, fields: tuple[str, str]):
-        """
-        Initialize a new TypedStruct schema.
-
-        Args:
-            name: Name of the struct.
-            fields: Sequence of (field_name, field_type) pairs.
-        """
-        self._cls = namedtuple(name, tuple(f[0] for f in fields))  # type: ignore
-        self._types = tuple(f[1].strip() for f in fields)
-        TypedStruct.structs_cache[name] = self
-
-    def read(self, src: BinaryIO) -> NamedTuple:
-        """
-        Read a struct instance from a binary stream according to the schema.
-
-        Returns:
-            An instance of the NamedTuple matching this TypedStruct.
-        """
-        result: list[Any] = []
-        for t in self._types:
-            field_type, num_repeat = self._parse_type(t)
-
-            get_call: Callable[[BinaryIO], Any]
-            if field_type in TypedStruct.io_map:
-                get_call = TypedStruct.io_map[field_type][0]
-            elif field_type in TypedStruct.structs_cache:
-                get_call = TypedStruct.structs_cache[field_type].read
-            else:
-                src.close()
-                raise TypeError("Unknown type")
-            if num_repeat > 1:
-                subresult: list[Any] = []
-                for _ in range(num_repeat):
-                    subresult.append(get_call(src))
-                result.append(tuple(subresult))
-            else:
-                for _ in range(num_repeat):
-                    result.append(get_call(src))
-
-        return self._cls._make(result)
-
-    def write(self, dst: BinaryIO, value: NamedTuple):
-        """
-        Write a struct instance to a binary stream according to the schema.
-
-        Args:
-            dst: Output binary stream.
-            value: NamedTuple matching this TypedStruct.
-        """
-        for v, t in zip(value, self._types):
-            field_type, num_repeat = self._parse_type(t)
-
-            add_call: Callable[[BinaryIO, Any], None]
-            if field_type in TypedStruct.io_map:
-                add_call = TypedStruct.io_map[field_type][1]
-            elif field_type in TypedStruct.structs_cache:
-                add_call = TypedStruct.structs_cache[field_type].write
-            else:
-                dst.close()
-                raise TypeError("Unknown type")
-            if num_repeat > 1:
-                for i in range(num_repeat):
-                    add_call(dst, v[i])
-            else:
-                add_call(dst, v)
-
-    @staticmethod
-    def _parse_type(t: str) -> tuple[str, int]:
-        """
-        Parse a type string (e.g., 'word:3') into its base type and repeat count.
-
-        Returns:
-            Tuple of (base_type, repeat_count).
-        """
-        if ":" in t:
-            field_type, num_repeat = t.split(":", 1)
-            num_repeat = int(num_repeat)
-        else:
-            field_type = t
-            num_repeat = 1
-        return field_type, num_repeat
