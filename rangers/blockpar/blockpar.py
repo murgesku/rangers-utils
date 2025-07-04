@@ -6,13 +6,27 @@ import os.path
 from bisect import bisect_left, bisect_right, insort_right
 from collections import Counter
 from dataclasses import dataclass
-from enum import IntEnum, Enum
+from enum import Enum, IntEnum
 from functools import total_ordering
-from typing import Generator, TextIO, TypeAlias, Union, cast, overload
+from io import BytesIO
+from typing import BinaryIO, Generator, TextIO, TypeAlias, Union, cast, overload
+from zlib import crc32
 
-from .exceptions import BlockParPathError, BlockParFormatError, BlockParContentHashError
-from rangers.io import AbstractIO, Buffer
+from rangers.io import (
+    cipher_xor,
+    read_bool,
+    read_byte,
+    read_uint,
+    read_widestr,
+    write_bool,
+    write_byte,
+    write_uint,
+    write_widestr,
+    zl_decompress,
+)
 from rangers.utils import bytes_to_int, bytes_xor, num_leading, parse_index
+
+from .exceptions import BlockParContentHashError, BlockParFormatError, BlockParPathError
 
 Content: TypeAlias = Union[str, "BlockPar"]
 
@@ -293,7 +307,7 @@ class BlockPar:
         else:
             return [node for node in self.__content if node.name == key]
 
-    def save(self, s: AbstractIO, *, is_cachedata: bool = False) -> None:
+    def save(self, s: BinaryIO, *, is_cachedata: bool = False) -> None:
         """
         Saves the current structure to a binary stream.
 
@@ -302,8 +316,8 @@ class BlockPar:
         - is_cachedata: whether the BlockPar is a CacheData, that use more simple layout.
         """
         if not is_cachedata:
-            s.add_bool(self.sorted)
-        s.add_uint(len(self))
+            write_bool(s, self.sorted)
+        write_uint(s, len(self))
 
         prev_name = None
         index = 0
@@ -317,17 +331,17 @@ class BlockPar:
                 else:
                     count = 0
 
-                s.add_uint(index)
-                s.add_uint(count)
+                write_uint(s, index)
+                write_uint(s, count)
                 index += 1
 
             if node.kind != _NodeKind.UNDEF:
-                s.add_byte(node.kind)
-                s.add_widestr(node.name)
+                write_byte(s, node.kind)
+                write_widestr(s, node.name)
 
             match node.kind:
                 case _NodeKind.PARAM:
-                    s.add_widestr(cast(str, node.content))
+                    write_widestr(s, cast(str, node.content))
 
                 case _NodeKind.BLOCK:
                     cast(BlockPar, node.content).save(s, is_cachedata=is_cachedata)
@@ -335,7 +349,7 @@ class BlockPar:
                 case _:
                     continue
 
-    def load(self, s: AbstractIO, *, is_cachedata: bool = False) -> None:
+    def load(self, s: BinaryIO, *, is_cachedata: bool = False) -> None:
         """
         Loads the structure from a binary stream.
 
@@ -348,20 +362,20 @@ class BlockPar:
         if is_cachedata:
             self.sorted = True
         else:
-            self.sorted = s.get_bool()
-        remain = s.get_uint()
+            self.sorted = read_bool(s)
+        remain = read_uint(s)
 
         while remain > 0:
             if not is_cachedata and self.sorted:
-                s.get_uint()  # index
-                s.get_uint()  # count
+                read_uint(s)  # index
+                read_uint(s)  # count
 
-            kind = _NodeKind(s.get_byte())
-            name = s.get_widestr()
+            kind = _NodeKind(read_byte(s))
+            name = read_widestr(s)
 
             match kind:
                 case _NodeKind.PARAM:
-                    content = s.get_widestr()
+                    content = read_widestr(s)
                     self.add(name, content)
 
                 case _NodeKind.BLOCK:
@@ -609,20 +623,20 @@ class BlockPar:
         else:
             seed_key = b"\x89\xc6\xe8\xb1"
 
-        b = Buffer.from_file(path)
+        b = open(path, "rb")
 
-        content_hash = b.get_uint()
+        content_hash = read_uint(b)
 
-        seed = bytes_xor(b.get(4), seed_key)
+        seed = bytes_xor(b.read(4), seed_key)
         seed = bytes_to_int(seed)
 
-        size = b.size() - b.pos()
+        content = bytearray(b.read())
 
-        b.decipher(seed, size)
-        calc_hash = b.calc_hash(size)
+        cipher_xor(content, seed)
+        calc_hash = crc32(content)
 
         if calc_hash == content_hash:
-            unpacked = Buffer.from_bytes(b.decompress(size))
+            unpacked = BytesIO(zl_decompress(content, "ZL03"))
             b.close()
             self.load(unpacked, is_cachedata=is_cachedata)
             unpacked.close()
